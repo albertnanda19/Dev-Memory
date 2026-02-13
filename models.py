@@ -9,6 +9,19 @@ except ModuleNotFoundError:  # pragma: no cover
 
     class BaseModel:  # minimal fallback (no validation)
         def __init__(self, **data: Any) -> None:
+            annotations = getattr(self.__class__, "__annotations__", {}) or {}
+            for key in annotations.keys():
+                if key in data:
+                    continue
+                if hasattr(self.__class__, key):
+                    default = getattr(self.__class__, key)
+                    if isinstance(default, list):
+                        setattr(self, key, list(default))
+                    elif isinstance(default, dict):
+                        setattr(self, key, dict(default))
+                    elif isinstance(default, set):
+                        setattr(self, key, set(default))
+
             for key, value in data.items():
                 setattr(self, key, value)
 
@@ -38,6 +51,8 @@ class RepoCommittedSummary(BaseModel):
     insertions: int
     deletions: int
     activity_type: str = "no_activity"
+    commit_messages: list[str] = []
+    commit_details: list[dict[str, Any]] = []
 
 
 class RepoWorkingState(BaseModel):

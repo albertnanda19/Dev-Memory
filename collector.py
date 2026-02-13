@@ -100,13 +100,29 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
                 "log",
                 f"--since={since}",
                 f"--until={until}",
-                "--pretty=format:%H",
+                "--no-merges",
+                "--pretty=format:%H|%s",
             ],
         )
         commits_count = 0
         commit_hashes: list[str] = []
+        commit_messages: list[str] = []
+        commit_details: list[dict[str, object]] = []
         if commits_cp is not None and commits_cp.returncode == 0:
-            commit_hashes = [ln.strip() for ln in commits_cp.stdout.splitlines() if ln.strip()]
+            for raw in commits_cp.stdout.splitlines():
+                line = raw.strip()
+                if not line:
+                    continue
+                if "|" not in line:
+                    continue
+                commit_hash, message = line.split("|", 1)
+                commit_hash = commit_hash.strip()
+                message = message.strip()
+                if not commit_hash or not message:
+                    continue
+                commit_hashes.append(commit_hash)
+                commit_messages.append(message)
+
             commits_count = len(commit_hashes)
         elif commits_cp is not None:
             print(
@@ -117,7 +133,7 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
         committed_ins = 0
         committed_del = 0
         if commits_count > 0:
-            for commit_hash in commit_hashes:
+            for commit_hash, msg in zip(commit_hashes, commit_messages, strict=False):
                 show_cp = _run_git(
                     repo_path,
                     [
@@ -140,6 +156,34 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
                     committed_ins += st.insertions
                     committed_del += st.deletions
 
+                files_cp = _run_git(
+                    repo_path,
+                    [
+                        "show",
+                        "--name-only",
+                        "--pretty=format:",
+                        commit_hash,
+                    ],
+                )
+                files: list[str] = []
+                if files_cp is not None and files_cp.returncode == 0:
+                    for ln in files_cp.stdout.splitlines():
+                        p = ln.strip()
+                        if p:
+                            files.append(p)
+                elif files_cp is not None:
+                    print(
+                        f"Error: failed to read commit files for {repo_path}: {files_cp.stderr.strip()}"
+                    )
+
+                commit_details.append(
+                    {
+                        "hash": commit_hash,
+                        "message": msg,
+                        "files": files,
+                    }
+                )
+
             committed.append(
                 RepoCommittedSummary(
                     repo_name=repo,
@@ -148,6 +192,8 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
                     files_changed=files_changed,
                     insertions=committed_ins,
                     deletions=committed_del,
+                    commit_messages=commit_messages,
+                    commit_details=commit_details,
                 )
             )
 

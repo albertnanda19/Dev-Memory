@@ -1,0 +1,30 @@
+{
+  "month": "2026-02",
+  "total_days_active": 1,
+  "total_commits": 3,
+  "total_files_changed": 42,
+  "total_insertions": 4936,
+  "total_deletions": 242,
+  "repositories": [
+    {
+      "repo_name": "edlink-cakrawala",
+      "total_commits": 2,
+      "total_files_changed": 41,
+      "total_insertions": 4935,
+      "total_deletions": 242,
+      "activity_breakdown": {
+        "feature": 1
+      }
+    },
+    {
+      "repo_name": "test",
+      "total_commits": 1,
+      "total_files_changed": 1,
+      "total_insertions": 1,
+      "total_deletions": 0,
+      "activity_breakdown": {
+        "bugfix": 1
+      }
+    }
+  ]
+}
