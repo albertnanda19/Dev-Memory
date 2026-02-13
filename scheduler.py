@@ -28,9 +28,8 @@ def _cron_command() -> str:
 
     python = _python_executable()
     run_daily = root / "run_daily.py"
-    log_path = logs_dir / "cron.log"
-
-    return f"0 8 * * 1-5 {python} {run_daily} >> {log_path} 2>&1 {_cron_marker()}"
+    # run_daily.py is silent and writes logs via logger.py into logs/cron-YYYY-MM-DD.log
+    return f"0 8 * * 1-5 {python} {run_daily} {_cron_marker()}"
 
 
 def _read_crontab() -> str:

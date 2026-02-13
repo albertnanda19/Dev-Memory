@@ -3,24 +3,18 @@ from __future__ import annotations
 import datetime as _dt
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import collector
+from logger import get_logger
+
+
+_LOG = get_logger()
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent
-
-
-def _log_path() -> Path:
-    logs_dir = _project_root() / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    return logs_dir / "cron.log"
-
-
-def _log_error(msg: str) -> None:
-    try:
-        _log_path().open("a", encoding="utf-8").write(msg.rstrip("\n") + "\n")
-    except Exception:
-        pass
 
 
 def _is_weekday(day: _dt.date) -> bool:
@@ -47,29 +41,70 @@ def _previous_month(day: _dt.date) -> str:
 
 def _run_main(args: list[str]) -> None:
     cmd = [sys.executable, str(_project_root() / "main.py"), *args]
-    subprocess.run(cmd, check=True, cwd=str(_project_root()))
+    cp = subprocess.run(
+        cmd,
+        cwd=str(_project_root()),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if cp.returncode != 0:
+        raise RuntimeError(
+            f"main.py gagal (rc={cp.returncode}): {cp.stderr.strip() or cp.stdout.strip()}"
+        )
 
 
 def main() -> None:
+    start_ts = time.perf_counter()
+    _LOG.info("Execution started")
+    _LOG.info("Python version: %s", sys.version.replace("\n", " "))
+    _LOG.info("Working directory: %s", str(_project_root()))
+
     today = _today()
     if not _is_weekday(today):
+        _LOG.info("Weekend detected, exit")
         return
 
     try:
+        date_str, since, until = collector._activity_range()
+        _LOG.info("Time window: %s -> %s (label=%s)", since, until, date_str)
+    except Exception:
+        _LOG.exception("Failed calculating time window")
+
+    daily_start = time.perf_counter()
+    try:
         _run_main(["--ai"])
     except Exception as e:
-        _log_error(f"{_dt.datetime.now().isoformat()} daily failed: {e}")
-        return
+        _LOG.exception("Daily generation failed: %s", e)
+        raise
+    daily_dur = time.perf_counter() - daily_start
+    _LOG.info("Daily report generated successfully (%.2fs)", daily_dur)
 
+    monthly_dur = 0.0
     if today.day <= 7 and _is_first_weekday_of_month(today):
         prev_month = _previous_month(today)
+        _LOG.info("First weekday of month detected, generating monthly for %s", prev_month)
+        monthly_start = time.perf_counter()
         try:
             _run_main(["--monthly", prev_month, "--ai"])
         except Exception as e:
-            _log_error(
-                f"{_dt.datetime.now().isoformat()} monthly failed for {prev_month}: {e}"
-            )
+            _LOG.exception("Monthly generation failed for %s: %s", prev_month, e)
+        else:
+            monthly_dur = time.perf_counter() - monthly_start
+            _LOG.info("Monthly report generated successfully (%.2fs)", monthly_dur)
+
+    total_dur = time.perf_counter() - start_ts
+    _LOG.info(
+        "Execution finished (total=%.2fs, daily=%.2fs, monthly=%.2fs)",
+        total_dur,
+        daily_dur,
+        monthly_dur,
+    )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        sys.exit(1)
+    sys.exit(0)

@@ -16,8 +16,18 @@ class TestRunDaily(unittest.TestCase):
 
     def test_first_weekday_triggers_monthly(self):
         # 2026-03-02 is Monday, also first weekday
+        ok = type(
+            "_CP",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "",
+                "stderr": "",
+            },
+        )()
+
         with patch("run_daily._today", return_value=_dt.date(2026, 3, 2)), patch(
-            "run_daily.subprocess.run"
+            "run_daily.subprocess.run", return_value=ok
         ) as run_mock:
             run_daily.main()
             # daily + monthly

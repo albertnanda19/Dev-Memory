@@ -1,0 +1,34 @@
+[2026-02-13T14:46:25] [INFO] [run_daily] Execution started
+[2026-02-13T14:46:25] [INFO] [run_daily] Python version: 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]
+[2026-02-13T14:46:25] [INFO] [run_daily] Working directory: /home/albert/Documents/coding-repository/dev-memory
+[2026-02-13T14:46:25] [INFO] [run_daily] Time window: 2026-02-12 06:00 -> 2026-02-13 05:59 (label=2026-02-12)
+[2026-02-13T14:46:25] [ERROR] [run_daily] Daily generation failed: main.py gagal (rc=<MagicMock name='run().returncode' id='129602720140224'>): <MagicMock name='run().stderr.strip()' id='129602711569328'>
+Traceback (most recent call last):
+  File "/home/albert/Documents/coding-repository/dev-memory/run_daily.py", line 76, in main
+    _run_main(["--ai"])
+  File "/home/albert/Documents/coding-repository/dev-memory/run_daily.py", line 52, in _run_main
+    raise RuntimeError(
+RuntimeError: main.py gagal (rc=<MagicMock name='run().returncode' id='129602720140224'>): <MagicMock name='run().stderr.strip()' id='129602711569328'>
+[2026-02-13T14:46:25] [INFO] [run_daily] Execution started
+[2026-02-13T14:46:25] [INFO] [run_daily] Python version: 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]
+[2026-02-13T14:46:25] [INFO] [run_daily] Working directory: /home/albert/Documents/coding-repository/dev-memory
+[2026-02-13T14:46:25] [INFO] [run_daily] Weekend detected, exit
+[2026-02-13T14:46:54] [INFO] [run_daily] Execution started
+[2026-02-13T14:46:54] [INFO] [run_daily] Python version: 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]
+[2026-02-13T14:46:54] [INFO] [run_daily] Working directory: /home/albert/Documents/coding-repository/dev-memory
+[2026-02-13T14:46:54] [INFO] [run_daily] Time window: 2026-02-12 06:00 -> 2026-02-13 05:59 (label=2026-02-12)
+[2026-02-13T14:46:54] [INFO] [run_daily] Daily report generated successfully (0.00s)
+[2026-02-13T14:46:54] [INFO] [run_daily] First weekday of month detected, generating monthly for 2026-02
+[2026-02-13T14:46:54] [INFO] [run_daily] Monthly report generated successfully (0.00s)
+[2026-02-13T14:46:54] [INFO] [run_daily] Execution finished (total=0.00s, daily=0.00s, monthly=0.00s)
+[2026-02-13T14:46:54] [INFO] [run_daily] Execution started
+[2026-02-13T14:46:54] [INFO] [run_daily] Python version: 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]
+[2026-02-13T14:46:54] [INFO] [run_daily] Working directory: /home/albert/Documents/coding-repository/dev-memory
+[2026-02-13T14:46:54] [INFO] [run_daily] Weekend detected, exit
+[2026-02-13T14:47:28] [INFO] [run_daily] Execution started
+[2026-02-13T14:47:28] [INFO] [run_daily] Python version: 3.12.3 (main, Jan 22 2026, 20:57:42) [GCC 13.3.0]
+[2026-02-13T14:47:28] [INFO] [run_daily] Working directory: /home/albert/Documents/coding-repository/dev-memory
+[2026-02-13T14:47:28] [INFO] [run_daily] Time window: 2026-02-12 06:00 -> 2026-02-13 05:59 (label=2026-02-12)
+[2026-02-13T14:47:43] [INFO] [llm-client] AI request completed (provider=gemini, model=gemini-3-flash-preview, status=200, prompt_chars=6460, response_chars=11012, latency=14.84s)
+[2026-02-13T14:47:43] [INFO] [run_daily] Daily report generated successfully (15.11s)
+[2026-02-13T14:47:43] [INFO] [run_daily] Execution finished (total=15.11s, daily=15.11s, monthly=0.00s)

@@ -7,7 +7,11 @@ import re
 import subprocess
 from dataclasses import dataclass
 
+from logger import get_logger
 from models import DailyReport, RepoCommittedSummary, RepoWorkingState
+
+
+_LOG = get_logger()
 
 
 @dataclass(frozen=True)
@@ -34,7 +38,7 @@ def _run_git(repo_path: str, args: list[str]) -> subprocess.CompletedProcess[str
             check=False,
         )
     except OSError as e:
-        print(f"Error: failed running git in {repo_path}: {e}")
+        _LOG.exception("Gagal menjalankan git di %s: %s", repo_path, e)
         return None
 
 
@@ -62,36 +66,39 @@ def _is_git_repo(repo_path: str) -> bool:
     return os.path.isdir(repo_path) and os.path.isdir(os.path.join(repo_path, ".git"))
 
 
-def _yesterday_range() -> tuple[str, str, str]:
+def _activity_range() -> tuple[str, str, str]:
     today = _dt.date.today()
-    # Monday (0) runs a 3-day window: Fri 00:00 through Sun 23:59
-    if today.weekday() == 0:
-        since_day = today - _dt.timedelta(days=3)
-        until_day = today - _dt.timedelta(days=1)
-        date_str = until_day.strftime("%Y-%m-%d")
-        since = f"{since_day.strftime('%Y-%m-%d')} 00:00"
-        until = f"{until_day.strftime('%Y-%m-%d')} 23:59"
-        return date_str, since, until
 
-    yesterday = today - _dt.timedelta(days=1)
-    date_str = yesterday.strftime("%Y-%m-%d")
-    since = f"{date_str} 00:00"
-    until = f"{date_str} 23:59"
+    # Laporan diberi label tanggal "kemarin" (atau Minggu untuk Senin)
+    label_day = today - _dt.timedelta(days=1)
+    date_str = label_day.strftime("%Y-%m-%d")
+
+    # Window harian: 06:00 kemarin → 05:59 hari ini
+    start_day = label_day
+    end_day = today
+
+    # Senin (0): ambil window Jumat 06:00 → Senin 05:59
+    if today.weekday() == 0:
+        start_day = today - _dt.timedelta(days=3)
+        end_day = today
+
+    since = f"{start_day.strftime('%Y-%m-%d')} 06:00"
+    until = f"{end_day.strftime('%Y-%m-%d')} 05:59"
     return date_str, since, until
 
 
 def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
-    date_str, since, until = _yesterday_range()
+    date_str, since, until = _activity_range()
 
     committed: list[RepoCommittedSummary] = []
     working_state: list[RepoWorkingState] = []
 
     for repo_path in repo_paths:
         if not repo_path or not os.path.isabs(repo_path):
-            print(f"Error: invalid repo path (not absolute), skipping: {repo_path}")
+            _LOG.error("Path repo tidak valid (bukan absolute), dilewati: %s", repo_path)
             continue
         if not _is_git_repo(repo_path):
-            print(f"Error: not a git repo, skipping: {repo_path}")
+            _LOG.error("Bukan git repo, dilewati: %s", repo_path)
             continue
 
         repo = _repo_name(repo_path)
@@ -99,7 +106,7 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
         branch_cp = _run_git(repo_path, ["branch", "--show-current"])
         if branch_cp is None or branch_cp.returncode != 0:
             err = (branch_cp.stderr.strip() if branch_cp else "").strip()
-            print(f"Error: failed to get branch for {repo_path}: {err}")
+            _LOG.error("Gagal mengambil branch untuk %s: %s", repo_path, err)
             continue
         branch = branch_cp.stdout.strip() or "(detached)"
 
@@ -135,8 +142,10 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
 
             commits_count = len(commit_hashes)
         elif commits_cp is not None:
-            print(
-                f"Error: failed to read commits for {repo_path}: {commits_cp.stderr.strip()}"
+            _LOG.error(
+                "Gagal membaca commits untuk %s: %s",
+                repo_path,
+                commits_cp.stderr.strip(),
             )
 
         files_changed = 0
@@ -156,8 +165,10 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
                 if show_cp is None:
                     continue
                 if show_cp.returncode != 0:
-                    print(
-                        f"Error: failed to read commit shortstat for {repo_path}: {show_cp.stderr.strip()}"
+                    _LOG.error(
+                        "Gagal membaca shortstat commit untuk %s: %s",
+                        repo_path,
+                        show_cp.stderr.strip(),
                     )
                     continue
                 for line in show_cp.stdout.splitlines():
@@ -182,8 +193,10 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
                         if p:
                             files.append(p)
                 elif files_cp is not None:
-                    print(
-                        f"Error: failed to read commit files for {repo_path}: {files_cp.stderr.strip()}"
+                    _LOG.error(
+                        "Gagal membaca file commit untuk %s: %s",
+                        repo_path,
+                        files_cp.stderr.strip(),
                     )
 
                 commit_details.append(
@@ -221,8 +234,10 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
                 if len(line) >= 3 and (line[0] == "M" or line[1] == "M"):
                     modified_files.append(line[3:].strip())
         elif status_cp is not None:
-            print(
-                f"Error: failed to read working state for {repo_path}: {status_cp.stderr.strip()}"
+            _LOG.error(
+                "Gagal membaca working state untuk %s: %s",
+                repo_path,
+                status_cp.stderr.strip(),
             )
 
         wd_ins = 0
@@ -233,8 +248,10 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
             wd_ins += st.insertions
             wd_del += st.deletions
         elif diff_cp is not None:
-            print(
-                f"Error: failed to read git diff shortstat for {repo_path}: {diff_cp.stderr.strip()}"
+            _LOG.error(
+                "Gagal membaca git diff shortstat untuk %s: %s",
+                repo_path,
+                diff_cp.stderr.strip(),
             )
 
         cached_cp = _run_git(repo_path, ["diff", "--cached", "--shortstat"])
@@ -243,8 +260,10 @@ def collect_daily_activity(repo_paths: list[str]) -> DailyReport:
             wd_ins += st.insertions
             wd_del += st.deletions
         elif cached_cp is not None:
-            print(
-                f"Error: failed to read git diff --cached shortstat for {repo_path}: {cached_cp.stderr.strip()}"
+            _LOG.error(
+                "Gagal membaca git diff --cached shortstat untuk %s: %s",
+                repo_path,
+                cached_cp.stderr.strip(),
             )
 
         working_state.append(

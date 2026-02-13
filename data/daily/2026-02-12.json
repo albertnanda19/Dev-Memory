@@ -5,14 +5,27 @@
     {
       "repo_name": "spmb-cakrawala-be",
       "branch": "feat/edlink/lecturer/lecturer-dashboard",
-      "commits_count": 1,
-      "files_changed": 5,
-      "insertions": 135,
-      "deletions": 3,
+      "commits_count": 2,
+      "files_changed": 11,
+      "insertions": 294,
+      "deletions": 6,
       "commit_messages": [
+        "feat: add endpoint for extedn deadline task for group",
         "feat: add query params to show group task data"
       ],
       "commit_details": [
+        {
+          "hash": "7a4e450d3c909713050d92c50b7acb9cab80242a",
+          "message": "feat: add endpoint for extedn deadline task for group",
+          "files": [
+            "internal/controller/edlink_controller/task_log.go",
+            "internal/model/request/edlink_request/task_log_request.go",
+            "internal/model/response/edlink_response/task_log_response.go",
+            "internal/repository/edlink_repository/task_log_repository.go",
+            "internal/server/routes/edlink_routes/task_log_routes.go",
+            "internal/services/edlink_services/task_log_services.go"
+          ]
+        },
         {
           "hash": "6bf29d4109ead5e67b3e291ae19c21b65ab85f5c",
           "message": "feat: add query params to show group task data",
@@ -25,20 +38,35 @@
           ]
         }
       ],
-      "activity_type": "improvement"
+      "activity_type": "feature"
     },
     {
       "repo_name": "edlink-cakrawala",
       "branch": "feat/lecturer-dashboard",
-      "commits_count": 2,
-      "files_changed": 41,
-      "insertions": 4935,
-      "deletions": 242,
+      "commits_count": 3,
+      "files_changed": 49,
+      "insertions": 5582,
+      "deletions": 245,
       "commit_messages": [
+        "feat: api integration for extend task deadline",
         "feat: api integration for preview task page",
         "feat:  slicing and api integration for lecture create, modify and preview task and material"
       ],
       "commit_details": [
+        {
+          "hash": "84c1fc870fde5a63394e2ae5aa18210323e1f1b5",
+          "message": "feat: api integration for extend task deadline",
+          "files": [
+            "src/components/class-detail/lecture/task-detail/TaskExtendSubmissionDrawer.tsx",
+            "src/hooks/useClassGroupById.ts",
+            "src/hooks/useExtendGroupDeadline.ts",
+            "src/hooks/useTaskLogById.ts",
+            "src/hooks/useUpdateTaskLog.ts",
+            "src/pages/lecture/class-detail/LectureClassDetailTaskDetailPage.tsx",
+            "src/service/classGroup.service.ts",
+            "src/service/taskLog.service.ts"
+          ]
+        },
         {
           "hash": "3aeb6388b38a6ed4e992a446eaa115d77db1c17d",
           "message": "feat: api integration for preview task page",
