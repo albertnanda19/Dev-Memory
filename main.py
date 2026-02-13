@@ -5,6 +5,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+from pathlib import Path
 
 from analyzer import classify_activity
 from collector import collect_daily_activity
@@ -36,6 +37,12 @@ def _parse_args() -> argparse.Namespace:
         "--ai",
         action="store_true",
         help="Append optional AI narrative sections to generated Markdown (presentation-only)",
+    )
+    parser.add_argument(
+        "--send-discord",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="Send an existing daily Markdown report to Discord (does not generate a new report)",
     )
     parser.add_argument(
         "--install-cron",
@@ -95,6 +102,31 @@ def _run_monthly(*, month: str, include_ai: bool) -> None:
     print(f"Monthly report generated for {month}")
 
 
+def _send_discord(*, date_str: str) -> None:
+    from discord.send_report import send_daily_standup
+
+    root = Path(__file__).resolve().parent
+    md_path = root / "data" / "daily" / f"{date_str}.md"
+    json_path = root / "data" / "daily" / f"{date_str}.json"
+
+    try:
+        res = send_daily_standup(
+            date_str=date_str,
+            markdown_path=md_path,
+            daily_json_path=json_path,
+        )
+    except Exception as e:
+        print(f"Discord send failed: {e}")
+        return
+
+    if res.ok:
+        print("Discord send success")
+    else:
+        print(
+            f"Discord send failed (http={res.status_code} retry={res.retry_count} error={res.error})"
+        )
+
+
 def main() -> None:
     args = _parse_args()
     if args.install_cron:
@@ -108,6 +140,9 @@ def main() -> None:
         return
     if args.remove_startup:
         remove_startup_hook()
+        return
+    if args.send_discord:
+        _send_discord(date_str=str(args.send_discord))
         return
     if args.monthly:
         _run_monthly(month=args.monthly, include_ai=bool(args.ai))
