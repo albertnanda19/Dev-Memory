@@ -109,20 +109,23 @@ def _load_ai_client():
 def generate_monthly_narrative(monthly_data: dict[str, Any]) -> str:
     prompt = "\n".join(
         [
-            "You are preparing a professional monthly engineering report.",
+            "Kamu adalah Software Engineer senior yang sedang menulis laporan profesional bulanan.",
             "",
-            "Based only on the structured data below:",
+            "Gunakan hanya data terstruktur berikut.",
             json.dumps(monthly_data, indent=2),
             "",
-            "Write:",
-            "1. Executive overview paragraph",
-            "2. Key impact areas",
-            "3. Engineering patterns observed (features vs bugfix vs refactor ratio)",
-            "4. Areas for next month focus",
+            "Tulis output dalam Bahasa Indonesia:",
+            "1. Paragraf ringkasan eksekutif",
+            "2. Dampak utama / area impact",
+            "3. Pola engineering (rasio fitur vs bugfix vs refactor)",
+            "4. Area fokus untuk bulan berikutnya",
             "",
-            "Do NOT invent metrics.",
-            "Use only given data.",
-            "Professional tone.",
+            "Aturan:",
+            "- Jangan mengarang metrik",
+            "- Jangan melebih-lebihkan",
+            "- Jangan halusinasi",
+            "- Gunakan hanya data yang diberikan",
+            "- Gunakan bahasa profesional dan jelas",
         ]
     )
 
@@ -134,41 +137,96 @@ def generate_monthly_markdown(monthly_data: dict[str, Any], include_ai: bool = F
     parts: list[str] = []
 
     month = str(monthly_data.get("month", ""))
-    parts.append(f"# Monthly Report — {month}")
+    parts.append(f"# Laporan Bulanan — {month}")
     parts.append("")
 
-    parts.append("## Overview")
-    parts.append(f"- Active Days: {int(monthly_data.get('total_days_active', 0) or 0)}")
-    parts.append(f"- Total Commits: {int(monthly_data.get('total_commits', 0) or 0)}")
+    parts.append("## Ikhtisar")
+    parts.append(f"- Hari Aktif: {int(monthly_data.get('total_days_active', 0) or 0)}")
+    parts.append(f"- Total Commit: {int(monthly_data.get('total_commits', 0) or 0)}")
     parts.append(
-        f"- Total Files Changed: {int(monthly_data.get('total_files_changed', 0) or 0)}"
+        f"- Total File Berubah: {int(monthly_data.get('total_files_changed', 0) or 0)}"
     )
     parts.append(
-        f"- Total Insertions: {int(monthly_data.get('total_insertions', 0) or 0)}"
+        f"- Total Penambahan Baris: {int(monthly_data.get('total_insertions', 0) or 0)}"
     )
     parts.append(
-        f"- Total Deletions: {int(monthly_data.get('total_deletions', 0) or 0)}"
+        f"- Total Pengurangan Baris: {int(monthly_data.get('total_deletions', 0) or 0)}"
     )
     parts.append("")
     parts.append("---")
     parts.append("")
 
-    parts.append("## Repository Breakdown")
+    repositories = monthly_data.get("repositories") or []
+
+    parts.append("## Distribusi Jenis Aktivitas")
+    activity_total: dict[str, int] = {}
+    for repo in repositories:
+        breakdown = repo.get("activity_breakdown") or {}
+        for k, v in breakdown.items():
+            activity_total[str(k)] = int(activity_total.get(str(k), 0)) + int(v or 0)
+
+    def _label(activity_type: str) -> str:
+        mapping = {
+            "feature": "Fitur Baru",
+            "bugfix": "Perbaikan Bug",
+            "refactor": "Refactor",
+            "improvement": "Improvement",
+            "no_activity": "Tidak Ada Aktivitas",
+        }
+        return mapping.get(activity_type, activity_type)
+
+    for key in ["feature", "bugfix", "refactor", "improvement", "no_activity"]:
+        if key in activity_total:
+            parts.append(f"- {_label(key)}: {activity_total.get(key, 0)}")
+    for key in sorted(activity_total.keys()):
+        if key in {"feature", "bugfix", "refactor", "improvement", "no_activity"}:
+            continue
+        parts.append(f"- {_label(key)}: {activity_total.get(key, 0)}")
+    parts.append("")
+    parts.append("---")
     parts.append("")
 
-    repositories = monthly_data.get("repositories") or []
+    parts.append("## Repository Paling Aktif")
+    repos_sorted = list(repositories)
+    repos_sorted.sort(
+        key=lambda r: (-int(r.get("total_commits", 0) or 0), str(r.get("repo_name", "")))
+    )
+    for repo in repos_sorted[:5]:
+        parts.append(
+            f"- {repo.get('repo_name', '')}: {int(repo.get('total_commits', 0) or 0)} commit"
+        )
+    if not repos_sorted:
+        parts.append("- Tidak ada data repository")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    parts.append("## Insight Produktivitas (Rule-based)")
+    feature_count = int(activity_total.get("feature", 0))
+    bugfix_count = int(activity_total.get("bugfix", 0))
+    if feature_count > bugfix_count:
+        parts.append("Bulan ini didominasi pengembangan fitur baru.")
+    elif bugfix_count > feature_count:
+        parts.append("Bulan ini fokus pada stabilisasi sistem.")
+    else:
+        parts.append("Bulan ini memiliki keseimbangan antara pengembangan fitur dan perbaikan bug.")
+    parts.append("")
+    parts.append("---")
+    parts.append("")
+
+    parts.append("## Rincian Per Repository")
     for repo in repositories:
         repo_name = repo.get("repo_name", "")
         parts.append(f"### {repo_name}")
-        parts.append(f"Total Commits: {int(repo.get('total_commits', 0) or 0)}  ")
+        parts.append(f"Total Commit: {int(repo.get('total_commits', 0) or 0)}  ")
         parts.append(
-            f"Files Changed: {int(repo.get('total_files_changed', 0) or 0)}  "
+            f"File Berubah: {int(repo.get('total_files_changed', 0) or 0)}  "
         )
-        parts.append(f"Insertions: {int(repo.get('total_insertions', 0) or 0)}  ")
-        parts.append(f"Deletions: {int(repo.get('total_deletions', 0) or 0)}  ")
+        parts.append(f"Penambahan Baris: {int(repo.get('total_insertions', 0) or 0)}  ")
+        parts.append(f"Pengurangan Baris: {int(repo.get('total_deletions', 0) or 0)}  ")
         parts.append("")
 
-        parts.append("Activity Distribution:")
+        parts.append("Distribusi Aktivitas:")
         breakdown = repo.get("activity_breakdown") or {}
         for key in sorted(breakdown.keys()):
             parts.append(f"- {key}: {int(breakdown.get(key, 0) or 0)}")
@@ -184,7 +242,7 @@ def generate_monthly_markdown(monthly_data: dict[str, Any], include_ai: bool = F
         if narrative.strip():
             parts.append("---")
             parts.append("")
-            parts.append("## AI Executive Narrative")
+            parts.append("## Narasi Eksekutif AI")
             parts.append("")
             parts.append(narrative.strip())
             parts.append("")

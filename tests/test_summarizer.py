@@ -15,8 +15,8 @@ class TestDailyMarkdown(unittest.TestCase):
             status="no_activity",
         )
         md = generate_markdown(report)
-        self.assertIn("# Daily Report — 2026-02-12", md)
-        self.assertIn("No development activity detected.", md)
+        self.assertIn("# Laporan Harian — 2026-02-12", md)
+        self.assertIn("Tidak ada aktivitas development yang terdeteksi.", md)
 
     def test_ai_failure_does_not_crash(self):
         report = DailyReport(
@@ -46,11 +46,13 @@ class TestDailyMarkdown(unittest.TestCase):
             status="success",
         )
 
-        with patch("summarizer.generate_daily_narrative", side_effect=RuntimeError("boom")):
+        with patch("builtins.print"), patch(
+            "summarizer.generate_daily_narrative", side_effect=RuntimeError("boom")
+        ):
             md = generate_markdown(report, include_ai=True)
 
-        self.assertIn("# Daily Report — 2026-02-13", md)
-        self.assertNotIn("## AI Narrative Summary", md)
+        self.assertIn("# Laporan Harian — 2026-02-13", md)
+        self.assertNotIn("## Ringkasan Naratif AI", md)
 
 
 if __name__ == "__main__":

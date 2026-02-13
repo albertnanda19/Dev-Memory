@@ -93,9 +93,12 @@ class TestMonthlyAggregation(unittest.TestCase):
             ],
         }
         md = monthly.generate_monthly_markdown(monthly_data)
-        self.assertIn("# Monthly Report — 2026-02", md)
-        self.assertIn("## Overview", md)
-        self.assertIn("## Repository Breakdown", md)
+        self.assertIn("# Laporan Bulanan — 2026-02", md)
+        self.assertIn("## Ikhtisar", md)
+        self.assertIn("## Distribusi Jenis Aktivitas", md)
+        self.assertIn("## Repository Paling Aktif", md)
+        self.assertIn("## Insight Produktivitas (Rule-based)", md)
+        self.assertIn("## Rincian Per Repository", md)
         self.assertIn("### payment", md)
 
 

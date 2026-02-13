@@ -63,7 +63,17 @@ def _is_git_repo(repo_path: str) -> bool:
 
 
 def _yesterday_range() -> tuple[str, str, str]:
-    yesterday = _dt.date.today() - _dt.timedelta(days=1)
+    today = _dt.date.today()
+    # Monday (0) runs a 3-day window: Fri 00:00 through Sun 23:59
+    if today.weekday() == 0:
+        since_day = today - _dt.timedelta(days=3)
+        until_day = today - _dt.timedelta(days=1)
+        date_str = until_day.strftime("%Y-%m-%d")
+        since = f"{since_day.strftime('%Y-%m-%d')} 00:00"
+        until = f"{until_day.strftime('%Y-%m-%d')} 23:59"
+        return date_str, since, until
+
+    yesterday = today - _dt.timedelta(days=1)
     date_str = yesterday.strftime("%Y-%m-%d")
     since = f"{date_str} 00:00"
     until = f"{date_str} 23:59"
