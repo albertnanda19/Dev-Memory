@@ -10,6 +10,8 @@ import collector
 from logger import get_logger
 from state_manager import get_last_execution_date, set_last_execution_date
 
+from discord.send_report import send_daily_standup
+
 
 _LOG = get_logger()
 
@@ -68,6 +70,10 @@ def _daily_json_path(date_str: str) -> Path:
     return _project_root() / "data" / "daily" / f"{date_str}.json"
 
 
+def _daily_markdown_path(date_str: str) -> Path:
+    return _project_root() / "data" / "daily" / f"{date_str}.md"
+
+
 def main() -> None:
     start_ts = time.perf_counter()
     _LOG.info("Execution started")
@@ -110,6 +116,27 @@ def main() -> None:
     _LOG.info("Daily report generated successfully (%.2fs)", daily_dur)
 
     set_last_execution_date(report_date)
+
+    # Discord notification layer (fail-safe)
+    try:
+        md_path = _daily_markdown_path(report_date)
+        json_path = _daily_json_path(report_date)
+        _LOG.info("[DISCORD DELIVERY] Preparing send (md=%s)", str(md_path))
+        res = send_daily_standup(
+            date_str=report_date,
+            markdown_path=md_path,
+            daily_json_path=json_path,
+        )
+        _LOG.info(
+            "[DISCORD DELIVERY] Status: %s (http=%s latency_ms=%s retry=%s error=%s)",
+            "SUCCESS" if res.ok else "FAILED",
+            res.status_code,
+            res.latency_ms,
+            res.retry_count,
+            res.error,
+        )
+    except Exception as e:
+        _LOG.warning("[DISCORD DELIVERY] Failed (ignored): %s", e, exc_info=True)
 
     monthly_dur = 0.0
     if today.day <= 7 and _is_first_weekday_of_month(today):
