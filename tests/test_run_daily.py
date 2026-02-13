@@ -27,6 +27,12 @@ class TestRunDaily(unittest.TestCase):
         )()
 
         with patch("run_daily._today", return_value=_dt.date(2026, 3, 2)), patch(
+            "run_daily._now", return_value=_dt.datetime(2026, 3, 2, 8, 0, 0)
+        ), patch(
+            "run_daily.get_last_execution_date", return_value=None
+        ), patch(
+            "pathlib.Path.exists", return_value=False
+        ), patch(
             "run_daily.subprocess.run", return_value=ok
         ) as run_mock:
             run_daily.main()

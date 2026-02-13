@@ -8,6 +8,7 @@ from pathlib import Path
 
 import collector
 from logger import get_logger
+from state_manager import get_last_execution_date, set_last_execution_date
 
 
 _LOG = get_logger()
@@ -23,6 +24,10 @@ def _is_weekday(day: _dt.date) -> bool:
 
 def _today() -> _dt.date:
     return _dt.date.today()
+
+
+def _now() -> _dt.datetime:
+    return _dt.datetime.now()
 
 
 def _is_first_weekday_of_month(day: _dt.date) -> bool:
@@ -54,6 +59,15 @@ def _run_main(args: list[str]) -> None:
         )
 
 
+def _logical_report_date(now: _dt.datetime) -> str:
+    # We only run after 06:00 to ensure we match collector's 06:00→05:59 window.
+    return (now.date() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def _daily_json_path(date_str: str) -> Path:
+    return _project_root() / "data" / "daily" / f"{date_str}.json"
+
+
 def main() -> None:
     start_ts = time.perf_counter()
     _LOG.info("Execution started")
@@ -63,6 +77,21 @@ def main() -> None:
     today = _today()
     if not _is_weekday(today):
         _LOG.info("Weekend detected, exit")
+        return
+
+    now = _now()
+    if now.time() < _dt.time(hour=6, minute=0):
+        _LOG.info("Before 06:00, skip to avoid time-window mismatch")
+        return
+
+    report_date = _logical_report_date(now)
+    last = get_last_execution_date()
+    if last == report_date:
+        _LOG.info("Already executed for %s (state), exit", report_date)
+        return
+    if _daily_json_path(report_date).exists():
+        _LOG.info("Daily JSON already exists for %s, exit", report_date)
+        set_last_execution_date(report_date)
         return
 
     try:
@@ -79,6 +108,8 @@ def main() -> None:
         raise
     daily_dur = time.perf_counter() - daily_start
     _LOG.info("Daily report generated successfully (%.2fs)", daily_dur)
+
+    set_last_execution_date(report_date)
 
     monthly_dur = 0.0
     if today.day <= 7 and _is_first_weekday_of_month(today):

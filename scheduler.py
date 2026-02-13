@@ -29,7 +29,48 @@ def _cron_command() -> str:
     python = _python_executable()
     run_daily = root / "run_daily.py"
     # run_daily.py is silent and writes logs via logger.py into logs/cron-YYYY-MM-DD.log
-    return f"0 8 * * 1-5 {python} {run_daily} {_cron_marker()}"
+    return f"0 6 * * 1-5 {python} {run_daily} {_cron_marker()}"
+
+
+def _startup_desktop_path() -> Path:
+    return Path.home() / ".config" / "autostart" / "dev-memory.desktop"
+
+
+def install_startup_hook() -> None:
+    autostart_dir = _startup_desktop_path().parent
+    autostart_dir.mkdir(parents=True, exist_ok=True)
+
+    python = _python_executable()
+    script = _project_root() / "run_on_startup.py"
+    content = "\n".join(
+        [
+            "[Desktop Entry]",
+            "Type=Application",
+            f"Exec={python} {script}",
+            "Hidden=false",
+            "NoDisplay=false",
+            "X-GNOME-Autostart-enabled=true",
+            "Name=Dev Memory Startup",
+            "",
+        ]
+    )
+
+    path = _startup_desktop_path()
+    if path.exists() and path.read_text(encoding="utf-8") == content:
+        print("Startup hook already installed")
+        return
+
+    path.write_text(content, encoding="utf-8")
+    print("Startup hook installed")
+
+
+def remove_startup_hook() -> None:
+    path = _startup_desktop_path()
+    if not path.exists():
+        print("Startup hook not found")
+        return
+    path.unlink()
+    print("Startup hook removed")
 
 
 def _read_crontab() -> str:

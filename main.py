@@ -11,7 +11,12 @@ from collector import collect_daily_activity
 from config import get_repo_paths
 from monthly import generate_monthly_markdown, generate_monthly_report
 from reporter import save_daily_markdown, save_monthly_json, save_monthly_markdown
-from scheduler import install_cron_job, remove_cron_job
+from scheduler import (
+    install_cron_job,
+    install_startup_hook,
+    remove_cron_job,
+    remove_startup_hook,
+)
 from summarizer import generate_markdown
 
 
@@ -41,6 +46,16 @@ def _parse_args() -> argparse.Namespace:
         "--remove-cron",
         action="store_true",
         help="Remove the dev-memory cron job if installed",
+    )
+    parser.add_argument(
+        "--install-startup",
+        action="store_true",
+        help="Install a Linux autostart hook that runs run_on_startup.py on login",
+    )
+    parser.add_argument(
+        "--remove-startup",
+        action="store_true",
+        help="Remove the dev-memory Linux autostart hook if installed",
     )
     return parser.parse_args()
 
@@ -87,6 +102,12 @@ def main() -> None:
         return
     if args.remove_cron:
         remove_cron_job()
+        return
+    if args.install_startup:
+        install_startup_hook()
+        return
+    if args.remove_startup:
+        remove_startup_hook()
         return
     if args.monthly:
         _run_monthly(month=args.monthly, include_ai=bool(args.ai))
