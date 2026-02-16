@@ -39,6 +39,11 @@ def _parse_args() -> argparse.Namespace:
         help="Append optional AI narrative sections to generated Markdown (presentation-only)",
     )
     parser.add_argument(
+        "--daily-ai-discord",
+        action="store_true",
+        help="Generate daily report with AI narrative and send it to Discord",
+    )
+    parser.add_argument(
         "--send-discord",
         metavar="YYYY-MM-DD",
         default=None,
@@ -67,7 +72,7 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _run_daily(*, include_ai: bool) -> None:
+def _run_daily(*, include_ai: bool) -> str:
     repo_paths = get_repo_paths()
     report = collect_daily_activity(repo_paths)
     report = classify_activity(report)
@@ -87,6 +92,7 @@ def _run_daily(*, include_ai: bool) -> None:
     save_daily_markdown(report, markdown)
 
     print(f"Daily report generated for {date_str}")
+    return date_str
 
 
 def _run_monthly(*, month: str, include_ai: bool) -> None:
@@ -140,6 +146,10 @@ def main() -> None:
         return
     if args.remove_startup:
         remove_startup_hook()
+        return
+    if args.daily_ai_discord:
+        date_str = _run_daily(include_ai=True)
+        _send_discord(date_str=date_str)
         return
     if args.send_discord:
         _send_discord(date_str=str(args.send_discord))

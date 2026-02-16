@@ -1,2 +1,7 @@
 .env
 /__pycache__/
+logs/
+data/state.json
+data/daily/
+data/monthly/
+*.pyc
