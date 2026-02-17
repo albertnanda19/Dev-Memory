@@ -8,11 +8,13 @@ from typing import Any
 try:
     import psycopg
     from psycopg_pool import AsyncConnectionPool
+    from psycopg.types.json import Jsonb
 
     _PSYCOPG_OK = True
 except ModuleNotFoundError:
     psycopg = None  # type: ignore[assignment]
     AsyncConnectionPool = None  # type: ignore[assignment]
+    Jsonb = None  # type: ignore[assignment]
     _PSYCOPG_OK = False
 
 
@@ -71,9 +73,10 @@ class PgStore:
         if not _PSYCOPG_OK:
             raise RuntimeError("psycopg is not installed")
         self._pool = AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=10, open=False)
+        self._is_open = False
 
     async def open(self) -> None:
-        if self._pool.opened:
+        if self._is_open:
             return
         from logger import get_logger
 
@@ -84,6 +87,7 @@ class PgStore:
             log.exception("pg_pool_open_failed err=%s", str(e))
             raise
         else:
+            self._is_open = True
             log.info("pg_pool_opened")
 
     async def close(self) -> None:
@@ -91,6 +95,7 @@ class PgStore:
 
         get_logger().info("pg_pool_closing")
         await self._pool.close()
+        self._is_open = False
 
     async def _repo_upsert(self, *, cur: psycopg.AsyncCursor[Any], name: str, local_path: str) -> str:
         await cur.execute(
@@ -124,6 +129,9 @@ class PgStore:
         commit_message: str,
         raw_files: Any,
     ) -> str:
+        json_files = None
+        if raw_files is not None:
+            json_files = Jsonb(raw_files)
         await cur.execute(
             """
             INSERT INTO commits (repository_id, commit_hash, commit_date, commit_message, raw_files)
@@ -135,7 +143,7 @@ class PgStore:
                 raw_files = EXCLUDED.raw_files
             RETURNING id
             """,
-            (repository_id, commit_hash, commit_date_iso, commit_message, raw_files),
+            (repository_id, commit_hash, commit_date_iso, commit_message, json_files),
         )
         row = await cur.fetchone()
         if row is None:
