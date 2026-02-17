@@ -231,7 +231,7 @@ def summarize_repo(
         repo_name=repo_name,
         start_date=start_date,
         end_date=end_date,
-        commits=commits,
+        commits=commits_for_llm,
         token_budget=token_budget,
     )
 
@@ -312,7 +312,7 @@ async def summarize_repo_async(
     use_cache: bool = True,
 ) -> RepoLLMResult:
     t0 = time.perf_counter()
-    commit_count = len(commits)
+    full_commit_count = len(commits)
 
     store = get_store() if use_cache else None
     payload_checksums: list[str] = []
@@ -349,25 +349,33 @@ async def summarize_repo_async(
             cached_bullets = [None for _ in commits]
             achievement_ids = ["" for _ in commits]
 
-    if store is not None and all((b or "").strip() for b in cached_bullets) and commit_count > 0:
+    missing_indexes = [i for i, b in enumerate(cached_bullets) if not (b or "").strip()]
+    if store is not None and not missing_indexes and full_commit_count > 0:
         bullets = [str(b or "").strip() for b in cached_bullets]
         latency_s = time.perf_counter() - t0
         return RepoLLMResult(
             ok=True,
             repo_name=repo_name,
-            bullet_lines=bullets[:commit_count],
+            bullet_lines=bullets[:full_commit_count],
             token_estimate=0,
             retries=0,
             latency_s=latency_s,
             error="",
         )
 
+    commits_for_llm = commits
+    achievement_ids_for_llm = achievement_ids
+    if store is not None and missing_indexes:
+        commits_for_llm = [commits[i] for i in missing_indexes]
+        achievement_ids_for_llm = [achievement_ids[i] for i in missing_indexes]
+    llm_commit_count = len(commits_for_llm)
+
     prompt, token_est = summarize_repo_once(
         ai_client=ai_client,
         repo_name=repo_name,
         start_date=start_date,
         end_date=end_date,
-        commits=commits,
+        commits=commits_for_llm,
         token_budget=token_budget,
     )
 
@@ -410,12 +418,12 @@ async def summarize_repo_async(
             continue
 
         bullets = _extract_bullets(text)
-        if len(bullets) >= commit_count:
+        if len(bullets) >= llm_commit_count:
             latency_s = time.perf_counter() - t0
-            res = RepoLLMResult(
+            res_llm = RepoLLMResult(
                 ok=True,
                 repo_name=repo_name,
-                bullet_lines=bullets[:commit_count],
+                bullet_lines=bullets[:llm_commit_count],
                 token_estimate=token_est,
                 retries=retries,
                 latency_s=latency_s,
@@ -424,10 +432,10 @@ async def summarize_repo_async(
             if store is not None:
                 model_name, model_version = _model_info()
                 updates = []
-                for idx, bullet in enumerate(res.bullet_lines):
-                    if idx >= len(achievement_ids):
+                for idx, bullet in enumerate(res_llm.bullet_lines):
+                    if idx >= len(achievement_ids_for_llm):
                         continue
-                    aid = (achievement_ids[idx] or "").strip()
+                    aid = (achievement_ids_for_llm[idx] or "").strip()
                     if not aid:
                         continue
                     updates.append(
@@ -441,32 +449,40 @@ async def summarize_repo_async(
                     )
                 if updates:
                     await asyncio.gather(*updates)
-            if use_cache:
-                key = _cache_key(
+
+            if store is not None and missing_indexes:
+                merged: list[str] = [str(b or "").strip() for b in cached_bullets]
+                for out_idx, src_idx in enumerate(missing_indexes):
+                    if out_idx >= len(res_llm.bullet_lines):
+                        break
+                    merged[src_idx] = res_llm.bullet_lines[out_idx]
+                return RepoLLMResult(
+                    ok=True,
                     repo_name=repo_name,
-                    start_date=start_date,
-                    end_date=end_date,
-                    commits=commits,
+                    bullet_lines=merged[:full_commit_count],
+                    token_estimate=token_est,
+                    retries=retries,
+                    latency_s=latency_s,
+                    error="",
                 )
-                _CACHE[key] = res
             _LOG.info(
                 "llm_repo_request repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f status=SUCCESS",
                 repo_name,
-                commit_count,
+                llm_commit_count,
                 token_est,
                 retries,
                 latency_s,
             )
-            return res
+            return res_llm
 
         if retries >= max_retries:
-            last_err = f"invalid bullet coverage bullets={len(bullets)} commits={commit_count}"
+            last_err = f"invalid bullet coverage bullets={len(bullets)} commits={llm_commit_count}"
             break
 
         _LOG.warning(
             "llm_repo_regen repo=%s commits=%s token_est=%s retry=%s bullets=%s",
             repo_name,
-            commit_count,
+            llm_commit_count,
             token_est,
             retries + 1,
             len(bullets),
@@ -485,12 +501,8 @@ async def summarize_repo_async(
     )
     if store is not None:
         fail_updates = []
-        for idx, cached in enumerate(cached_bullets):
-            if (cached or "").strip():
-                continue
-            if idx >= len(achievement_ids):
-                continue
-            aid = (achievement_ids[idx] or "").strip()
+        for idx, aid in enumerate(achievement_ids_for_llm):
+            aid = (aid or "").strip()
             if not aid:
                 continue
             fail_updates.append(store.mark_failed(achievement_id=aid))
