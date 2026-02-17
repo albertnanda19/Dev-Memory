@@ -250,7 +250,7 @@ def summarize_repo(
             _LOG.info(
                 "llm_repo_attempt repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f",
                 repo_name,
-                commit_count,
+                llm_commit_count,
                 token_est,
                 retries,
                 attempt_latency,
@@ -263,7 +263,7 @@ def summarize_repo(
             _LOG.warning(
                 "llm_repo_retry repo=%s commits=%s token_est=%s retry=%s wait_s=%.2f err=%s",
                 repo_name,
-                commit_count,
+                llm_commit_count,
                 token_est,
                 retries + 1,
                 wait_s,
@@ -394,7 +394,7 @@ async def summarize_repo_async(
             _LOG.info(
                 "llm_repo_attempt repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f",
                 repo_name,
-                commit_count,
+                llm_commit_count,
                 token_est,
                 retries,
                 attempt_latency,
@@ -407,7 +407,7 @@ async def summarize_repo_async(
             _LOG.warning(
                 "llm_repo_retry repo=%s commits=%s token_est=%s retry=%s wait_s=%.2f err=%s",
                 repo_name,
-                commit_count,
+                llm_commit_count,
                 token_est,
                 retries + 1,
                 wait_s,
@@ -511,7 +511,7 @@ async def summarize_repo_async(
     _LOG.error(
         "llm_repo_request repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f status=FAILED err=%s",
         repo_name,
-        commit_count,
+        llm_commit_count,
         token_est,
         retries,
         latency_s,
