@@ -108,28 +108,37 @@ def _build_non_ai_standup(agg: dict[str, Any]) -> str:
     improved = _take(["refactor", "performance"], 6)
     safeguards = _take(["validation", "test", "fix"], 6)
 
+    def _clean_desc(desc: str) -> str:
+        d = desc.strip()
+        low = d.lower()
+        prefixes = ["feat:", "fix:", "refactor:", "test:", "chore:", "perf:", "ci:"]
+        for p in prefixes:
+            if low.startswith(p):
+                return d[len(p) :].strip()
+        return d
+
     if built:
-        sections.append("### What I Built")
+        sections.append("### Yang Saya Kerjakan")
         for it in built:
-            desc = str(it.get("description") or "").strip()
+            desc = _clean_desc(str(it.get("description") or ""))
             if desc:
-                sections.append(f"- {desc}")
+                sections.append(f"- Saya {desc}")
         sections.append("")
 
     if improved:
-        sections.append("### What I Improved")
+        sections.append("### Yang Saya Tingkatkan")
         for it in improved:
-            desc = str(it.get("description") or "").strip()
+            desc = _clean_desc(str(it.get("description") or ""))
             if desc:
-                sections.append(f"- {desc}")
+                sections.append(f"- Saya {desc}")
         sections.append("")
 
     if safeguards:
-        sections.append("### Safeguards & Quality")
+        sections.append("### Safeguard & Quality")
         for it in safeguards:
-            desc = str(it.get("description") or "").strip()
+            desc = _clean_desc(str(it.get("description") or ""))
             if desc:
-                sections.append(f"- {desc}")
+                sections.append(f"- Saya {desc}")
         sections.append("")
 
     if not built and not improved and not safeguards:
@@ -141,8 +150,19 @@ def _build_non_ai_standup(agg: dict[str, Any]) -> str:
 def _build_ai_prompt(agg: dict[str, Any]) -> str:
     return "\n".join(
         [
-            "You are writing a real daily standup update as a software engineer.",
-            "Write in first person (I ...).",
+            "Tulis Daily Standup dalam Bahasa Indonesia yang natural untuk software engineer.",
+            "Gunakan sudut pandang first person dan mulai setiap bullet dengan 'Saya ...'.",
+            "",
+            "Gunakan Bahasa Indonesia sebagai bahasa utama.",
+            "Biarkan technical terms tetap dalam English (contoh: endpoint, validation, middleware, refactor, transaction, service layer, redirect, database, integration, performance).",
+            "Jangan menerjemahkan technical terms kalau membuatnya jadi tidak natural.",
+            "",
+            "Hindari awkward literal translation.",
+            "Hindari tone akademik / blog.",
+            "Hindari corporate buzzwords.",
+            "",
+            "Fokus pada execution narrative: apa yang saya build/ubah, problem apa yang saya selesaikan, keputusan teknis apa yang saya buat, safeguard apa yang saya tambah.",
+            "Jelaskan seperlunya alasan teknis tanpa berubah jadi dokumentasi.",
             "",
             "Use only the structured data below.",
             json.dumps(
@@ -157,26 +177,25 @@ def _build_ai_prompt(agg: dict[str, Any]) -> str:
                 indent=2,
             ),
             "",
-            "Output requirements:",
-            "- Use Markdown headings exactly as below.",
-            "- Provide at least 4 concrete action statements across the sections.",
-            "- Every bullet must describe an action taken (implemented/added/fixed/refactored/introduced/ensured/etc).",
-            "- Be specific. Avoid generic phrases like 'worked across multiple components'.",
-            "- Do not mention commits, insertions, deletions, file counts, or any numeric statistics.",
-            "- Do not write 'Executive Summary'.",
+            "Aturan output:",
+            "- Gunakan Markdown heading persis seperti format di bawah.",
+            "- Minimal 5 dan maksimal 8 bullet aksi yang konkret (total across sections).",
+            "- Hindari kalimat generik seperti 'Saya mengoptimalkan sistem' tanpa konteks. Jelaskan apa yang diubah.",
+            "- Jangan sebut metric atau angka apa pun (commit, insertions, deletions, file count, dll).",
+            "- Jangan gunakan phrase seperti 'Executive Summary'.",
             "",
             "Structure:",
-            "## What I Built",
-            "- ...",
+            "### Yang Saya Kerjakan",
+            "- Saya ...",
             "",
-            "## What I Improved",
-            "- ...",
+            "### Yang Saya Tingkatkan",
+            "- Saya ...",
             "",
-            "## Safeguards & Quality",
-            "- ...",
+            "### Safeguard & Quality",
+            "- Saya ...",
             "",
-            "## Notes / Next Focus",
-            "- ...",
+            "### Fokus Berikutnya",
+            "- Saya ...",
         ]
     )
 
@@ -209,45 +228,52 @@ def _ai_output_is_valid(text: str) -> bool:
         "multiple components",
         "improved overall",
         "general improvements",
+        "mengoptimalkan sistem",
+        "meningkatkan performa secara keseluruhan",
+        "mengembangkan fitur baru",
     ]
     if any(g in low for g in generic):
         return False
 
-    action_lines = [
-        ln.strip()
-        for ln in t.splitlines()
-        if ln.strip().startswith("-")
-        and any(
-            v in ln.lower()
-            for v in [
-                "implemented",
-                "added",
-                "created",
-                "integrated",
-                "fixed",
-                "resolved",
-                "refactored",
-                "simplified",
-                "restructured",
-                "introduced",
-                "ensured",
-                "validated",
-                "optimized",
-                "configured",
-                "automated",
-            ]
-        )
+    bullets = [ln.strip() for ln in t.splitlines() if ln.strip().startswith("-")]
+    saya_bullets = [ln for ln in bullets if ln.lower().startswith("- saya ")]
+    if len(saya_bullets) < 5:
+        return False
+
+    if len(bullets) > 8:
+        return False
+
+    action_words = [
+        "menambahkan",
+        "membuat",
+        "mengimplementasikan",
+        "mengintegrasikan",
+        "memperbaiki",
+        "menyelesaikan",
+        "melakukan refactor",
+        "merapikan",
+        "menyederhanakan",
+        "menambahkan validation",
+        "menambahkan error handling",
+        "memastikan",
+        "mengoptimalkan",
+        "mengonfigurasi",
+        "mengotomasi",
     ]
-    if len(action_lines) < 4:
+    action_like = [ln for ln in saya_bullets if any(w in ln.lower() for w in action_words)]
+    if len(action_like) < 5:
         return False
 
     required_headings = [
-        "## what i built",
-        "## what i improved",
-        "## safeguards & quality",
-        "## notes / next focus",
+        "### yang saya kerjakan",
+        "### yang saya tingkatkan",
+        "### safeguard & quality",
+        "### fokus berikutnya",
     ]
     if not all(h in low for h in required_headings):
+        return False
+
+    if " saya " not in low:
         return False
 
     return True
@@ -256,16 +282,17 @@ def _ai_output_is_valid(text: str) -> bool:
 def _build_ai_retry_prompt(previous_text: str) -> str:
     return "\n".join(
         [
-            "Rewrite the standup output and strictly follow the requirements.",
+            "Tulis ulang output Daily Standup dan patuhi aturan dengan ketat.",
             "",
-            "Hard rules:",
-            "- No numbers.",
-            "- No mention of commits, insertions, deletions, or file counts.",
-            "- No 'Executive Summary'.",
-            "- At least 4 action bullets starting with strong verbs.",
-            "- Avoid generic statements.",
+            "Aturan wajib:",
+            "- Bahasa Indonesia natural (bukan terjemahan literal).",
+            "- Technical terms tetap English.",
+            "- Setiap bullet harus dimulai dengan 'Saya ...'.",
+            "- Minimal 5 dan maksimal 8 bullet aksi konkret.",
+            "- Tidak boleh ada angka atau metric (commit/insertions/deletions/file count).",
+            "- Hindari buzzword dan kalimat generik tanpa detail.",
             "",
-            "Previous output (invalid):",
+            "Output sebelumnya (invalid):",
             previous_text.strip(),
         ]
     )
