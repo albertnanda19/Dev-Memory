@@ -28,6 +28,11 @@ def _yesterday_date_str() -> str:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="dev-memory")
     parser.add_argument(
+        "--bot",
+        action="store_true",
+        help="Start Discord bot runtime (slash commands)",
+    )
+    parser.add_argument(
         "--monthly",
         metavar="YYYY-MM",
         default=None,
@@ -109,7 +114,7 @@ def _run_monthly(*, month: str, include_ai: bool) -> None:
 
 
 def _send_discord(*, date_str: str) -> None:
-    from discord.send_report import send_daily_standup
+    from discord_delivery.send_report import send_daily_standup
 
     root = Path(__file__).resolve().parent
     md_path = root / "data" / "daily" / f"{date_str}.md"
@@ -135,6 +140,11 @@ def _send_discord(*, date_str: str) -> None:
 
 def main() -> None:
     args = _parse_args()
+    if args.bot:
+        from bot import run_bot
+
+        run_bot()
+        return
     if args.install_cron:
         install_cron_job()
         return

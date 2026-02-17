@@ -10,7 +10,7 @@ import collector
 from logger import get_logger
 from state_manager import get_last_execution_date, set_last_execution_date
 
-from discord.send_report import send_daily_standup
+from discord_delivery.send_report import send_daily_standup
 
 
 _LOG = get_logger()

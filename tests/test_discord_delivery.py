@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from discord.discord_client import send_message_or_file
-from discord.send_report import send_daily_standup
+from discord_delivery.discord_client import send_message_or_file
+from discord_delivery.send_report import send_daily_standup
 
 
 class _Resp:
@@ -28,7 +28,7 @@ class _Resp:
 class TestDiscordDelivery(unittest.TestCase):
     def test_missing_credentials_returns_failure(self):
         with patch.dict(os.environ, {}, clear=True), patch(
-            "discord.discord_client._DOTENV", {}
+            "discord_delivery.discord_client._DOTENV", {}
         ):
             res = send_message_or_file(
                 content="x",
@@ -53,8 +53,8 @@ class TestDiscordDelivery(unittest.TestCase):
             os.environ,
             {"DISCORD_BOT_TOKEN": "t", "DISCORD_CHANNEL_ID": "c"},
             clear=True,
-        ), patch("discord.discord_client.urlopen", side_effect=_fake_urlopen), patch(
-            "discord.discord_client.time.sleep"
+        ), patch("discord_delivery.discord_client.urlopen", side_effect=_fake_urlopen), patch(
+            "discord_delivery.discord_client.time.sleep"
         ) as sleep_mock:
             res = send_message_or_file(
                 content="x",
@@ -80,8 +80,8 @@ class TestDiscordDelivery(unittest.TestCase):
             os.environ,
             {"DISCORD_BOT_TOKEN": "t", "DISCORD_CHANNEL_ID": "c"},
             clear=True,
-        ), patch("discord.discord_client.urlopen", side_effect=_fake_urlopen), patch(
-            "discord.discord_client.time.sleep"
+        ), patch("discord_delivery.discord_client.urlopen", side_effect=_fake_urlopen), patch(
+            "discord_delivery.discord_client.time.sleep"
         ) as sleep_mock:
             res = send_message_or_file(
                 content="x",
