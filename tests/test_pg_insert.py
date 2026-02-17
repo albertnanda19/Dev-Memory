@@ -108,8 +108,10 @@ class TestPgInsert(unittest.TestCase):
                 ach_count = int((cur.fetchone() or [0])[0])
                 self.assertEqual(ach_count, 2)
 
-                cur.execute("DELETE FROM repositories WHERE name = %s", (repo_name,))
-                conn.commit()
+                keep = (os.getenv("KEEP_TEST_DATA") or "").strip().lower() in {"1", "true", "yes"}
+                if not keep:
+                    cur.execute("DELETE FROM repositories WHERE name = %s", (repo_name,))
+                    conn.commit()
 
 
 if __name__ == "__main__":
