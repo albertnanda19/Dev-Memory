@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -32,6 +33,13 @@ def get_logger() -> logging.Logger:
         _IsoFormatter("[%(asctime)s] [%(levelname)s] [%(module)s] %(message)s")
     )
     logger.addHandler(handler)
+
+    stream_handler = logging.StreamHandler(stream=sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(
+        _IsoFormatter("[%(asctime)s] [%(levelname)s] [%(module)s] %(message)s")
+    )
+    logger.addHandler(stream_handler)
 
     logger._dev_memory_configured = True  # type: ignore[attr-defined]
     return logger

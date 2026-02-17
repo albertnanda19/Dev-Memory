@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 try:
@@ -15,6 +16,34 @@ except ModuleNotFoundError:
     _PSYCOPG_OK = False
 
 
+def _load_dotenv_vars() -> dict[str, str]:
+    env_path = Path(__file__).resolve().parent / ".env"
+    if not env_path.exists():
+        return {}
+    try:
+        content = env_path.read_text(encoding="utf-8")
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip()
+        v = v.strip().strip('"').strip("'")
+        if k:
+            out[k] = v
+    return out
+
+
+_DOTENV = _load_dotenv_vars()
+
+
 @dataclass(frozen=True)
 class AchievementRow:
     id: str
@@ -26,8 +55,15 @@ def _env(name: str) -> str:
     return (os.getenv(name) or "").strip()
 
 
+def _env_any(name: str) -> str:
+    v = _env(name)
+    if v:
+        return v
+    return (_DOTENV.get(name) or "").strip()
+
+
 def _database_url() -> str:
-    return _env("DATABASE_URL")
+    return _env_any("DATABASE_URL")
 
 
 class PgStore:
@@ -180,6 +216,16 @@ class PgStore:
                 async with conn.cursor() as cur:
                     repo_id = await self._repo_upsert(cur=cur, name=repository_name, local_path=local_path)
 
+                    from logger import get_logger
+
+                    log = get_logger()
+                    log.info(
+                        "pg_prepare_start repo=%s commits=%s repo_id=%s",
+                        repository_name,
+                        len(commits),
+                        repo_id,
+                    )
+
                     for idx, c in enumerate(commits):
                         commit_hash = str(c.get("hash") or "").strip()
                         commit_message = str(c.get("message") or "").strip()
@@ -198,6 +244,13 @@ class PgStore:
                             raw_files=raw_files,
                         )
 
+                        log.info(
+                            "pg_commit_upsert repo=%s commit_hash=%s commit_id=%s",
+                            repository_name,
+                            commit_hash,
+                            commit_id,
+                        )
+
                         checksum = payload_checksums[idx]
                         await self._achievement_invalidate_others(cur=cur, commit_id=commit_id, payload_checksum=checksum)
 
@@ -205,10 +258,23 @@ class PgStore:
                         if existing is not None and existing.processing_status == "completed":
                             cached[idx] = (existing.ai_bullet or "").strip() or None
                             achievement_ids[idx] = existing.id
+                            log.info(
+                                "pg_achievement_cache_hit repo=%s commit_hash=%s achievement_id=%s",
+                                repository_name,
+                                commit_hash,
+                                existing.id,
+                            )
                             continue
 
                         if existing is not None:
                             achievement_ids[idx] = existing.id
+                            log.info(
+                                "pg_achievement_reuse repo=%s commit_hash=%s status=%s achievement_id=%s",
+                                repository_name,
+                                commit_hash,
+                                existing.processing_status,
+                                existing.id,
+                            )
                             continue
 
                         achievement_ids[idx] = await self._achievement_insert_pending(
@@ -216,6 +282,13 @@ class PgStore:
                             commit_id=commit_id,
                             payload_checksum=checksum,
                             prompt_version=prompt_version,
+                        )
+
+                        log.info(
+                            "pg_achievement_pending repo=%s commit_hash=%s achievement_id=%s",
+                            repository_name,
+                            commit_hash,
+                            achievement_ids[idx],
                         )
 
         return cached, achievement_ids
@@ -248,6 +321,14 @@ class PgStore:
                         (ai_bullet, model_name, model_version, token_usage, achievement_id),
                     )
 
+        from logger import get_logger
+
+        get_logger().info(
+            "pg_achievement_completed achievement_id=%s model_name=%s",
+            achievement_id,
+            model_name,
+        )
+
     async def mark_failed(self, *, achievement_id: str) -> None:
         await self.open()
         async with self._pool.connection() as conn:
@@ -261,6 +342,13 @@ class PgStore:
                         """,
                         (achievement_id,),
                     )
+
+        from logger import get_logger
+
+        get_logger().info(
+            "pg_achievement_failed achievement_id=%s",
+            achievement_id,
+        )
 
 
 _STORE: PgStore | None = None
