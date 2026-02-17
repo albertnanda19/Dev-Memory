@@ -99,6 +99,30 @@ def _iter_files_from_report(report: dict[str, Any]):
                     yield fp.strip()
 
 
+def _iter_commit_items(report: dict[str, Any]):
+    committed = report.get("committed")
+    if not isinstance(committed, list):
+        return
+    for repo in committed:
+        if not isinstance(repo, dict):
+            continue
+        repo_name = repo.get("repo_name")
+        repo_name = repo_name.strip() if isinstance(repo_name, str) else ""
+        details = repo.get("commit_details")
+        if not isinstance(details, list):
+            continue
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            msg = item.get("message")
+            msg = msg.strip() if isinstance(msg, str) else ""
+            files = item.get("files")
+            if not isinstance(files, list):
+                files = []
+            file_list = [f.strip() for f in files if isinstance(f, str) and f.strip()]
+            yield repo_name, msg, file_list
+
+
 def _dir_key(file_path: str) -> str:
     p = file_path.strip().lstrip("/")
     if not p:
@@ -117,6 +141,63 @@ def _ext_key(file_path: str) -> str:
     return suffix or ""
 
 
+def _classify_intent(message: str) -> str:
+    m = message.lower().strip()
+    if not m:
+        return "chore"
+
+    if any(k in m for k in ["validate", "validation", "sanitize", "guard", "constraint"]):
+        return "validation"
+    if any(k in m for k in ["optimize", "perf", "performance", "speed", "latency", "cache"]):
+        return "performance"
+    if any(k in m for k in ["infra", "ci", "cd", "pipeline", "docker", "k8s", "deploy"]):
+        return "infra"
+    if any(k in m for k in ["refactor", "cleanup", "simplify", "restructure"]):
+        return "refactor"
+    if any(k in m for k in ["test", "tests", "spec"]):
+        return "test"
+    if any(k in m for k in ["fix", "bug", "issue", "hotfix", "patch"]):
+        return "fix"
+    if any(k in m for k in ["add", "implement", "create", "introduce", "integrate", "build"]):
+        return "feature"
+
+    conventional = ["feat", "fix", "refactor", "test", "chore", "perf", "ci"]
+    for p in conventional:
+        if m.startswith(p + ":"):
+            return "feature" if p == "feat" else ("performance" if p == "perf" else ("infra" if p == "ci" else p))
+
+    return "chore"
+
+
+def _group_files_by_directory(files: list[str]) -> dict[str, list[str]]:
+    grouped: dict[str, list[str]] = {}
+    for fp in files:
+        d = _dir_key(fp) or "(root)"
+        arr = grouped.get(d)
+        if arr is None:
+            arr = []
+            grouped[d] = arr
+        if fp not in arr:
+            arr.append(fp)
+    for k in list(grouped.keys()):
+        grouped[k].sort()
+    return dict(sorted(grouped.items(), key=lambda x: x[0]))
+
+
+def _action_verbs(intent: str) -> list[str]:
+    mapping = {
+        "feature": ["implemented", "added", "created", "integrated"],
+        "fix": ["fixed", "resolved", "stabilized"],
+        "refactor": ["refactored", "simplified", "restructured"],
+        "test": ["added tests", "validated"],
+        "chore": ["updated", "adjusted"],
+        "infra": ["configured", "automated"],
+        "validation": ["introduced validation", "added safeguards"],
+        "performance": ["optimized", "improved performance"],
+    }
+    return mapping.get(intent, ["updated"])
+
+
 def _rank(counter: dict[str, int], *, limit: int = 10) -> list[str]:
     items = [(k, int(v or 0)) for k, v in counter.items() if k and int(v or 0) > 0]
     items.sort(key=lambda x: (-x[1], x[0]))
@@ -133,6 +214,9 @@ def aggregate_reports(report_list: list[dict[str, Any]]) -> dict[str, Any]:
 
     dir_counts: dict[str, int] = {}
     ext_counts: dict[str, int] = {}
+
+    detailed_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    all_files: list[str] = []
 
     for report in report_list:
         if not isinstance(report, dict):
@@ -156,6 +240,36 @@ def aggregate_reports(report_list: list[dict[str, Any]]) -> dict[str, Any]:
                 total_insertions += _safe_int(repo.get("insertions"))
                 total_deletions += _safe_int(repo.get("deletions"))
 
+        for repo_name, msg, files in _iter_commit_items(report):
+            if not msg and not files:
+                continue
+
+            intent = _classify_intent(msg)
+            key = (intent, msg)
+            existing = detailed_by_key.get(key)
+            if existing is None:
+                existing = {
+                    "type": intent,
+                    "description": msg,
+                    "repos": sorted([repo_name]) if repo_name else [],
+                    "files": sorted(set(files)),
+                    "action_verbs": _action_verbs(intent),
+                }
+                detailed_by_key[key] = existing
+            else:
+                if repo_name and repo_name not in (existing.get("repos") or []):
+                    repos = list(existing.get("repos") or [])
+                    repos.append(repo_name)
+                    repos.sort()
+                    existing["repos"] = repos
+                prev_files = set(existing.get("files") or [])
+                for f in files:
+                    prev_files.add(f)
+                existing["files"] = sorted(prev_files)
+
+            for f in files:
+                all_files.append(f)
+
         for fp in _iter_files_from_report(report):
             d = _dir_key(fp)
             if d:
@@ -168,6 +282,10 @@ def aggregate_reports(report_list: list[dict[str, Any]]) -> dict[str, Any]:
     start = dates_sorted[0] if dates_sorted else ""
     end = dates_sorted[-1] if dates_sorted else ""
 
+    detailed_changes = list(detailed_by_key.values())
+    detailed_changes.sort(key=lambda x: (str(x.get("type", "")), str(x.get("description", ""))))
+    files_by_directory = _group_files_by_directory(all_files)
+
     return {
         "start_date": start,
         "end_date": end,
@@ -178,4 +296,6 @@ def aggregate_reports(report_list: list[dict[str, Any]]) -> dict[str, Any]:
         "total_deletions": total_deletions,
         "top_directories": _rank(dir_counts),
         "top_file_types": _rank(ext_counts),
+        "files_by_directory": files_by_directory,
+        "detailed_changes": detailed_changes,
     }

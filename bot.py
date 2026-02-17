@@ -80,61 +80,193 @@ def _ai_enabled() -> bool:
     return False
 
 
-def _build_structured_markdown(agg: dict[str, Any]) -> str:
-    period = f"{agg.get('start_date', '')} → {agg.get('end_date', '')}".strip()
-    if period == "→" or period == "":
-        period = ""
+def _build_non_ai_standup(agg: dict[str, Any]) -> str:
+    sections: list[str] = []
 
-    top_dirs = agg.get("top_directories") or []
-    top_ext = agg.get("top_file_types") or []
+    items = agg.get("detailed_changes") or []
+    if not isinstance(items, list):
+        items = []
 
-    parts: list[str] = []
-    parts.append("# Achievement Summary")
-    if period:
-        parts.append(f"Period: {period}")
-    parts.append(f"Total Days: {int(agg.get('total_days', 0) or 0)}")
-    parts.append("")
-    parts.append(f"Commits: {int(agg.get('total_commits', 0) or 0)}")
-    parts.append(f"Files Changed: {int(agg.get('total_files_changed', 0) or 0)}")
-    parts.append(f"Insertions: {int(agg.get('total_insertions', 0) or 0)}")
-    parts.append(f"Deletions: {int(agg.get('total_deletions', 0) or 0)}")
-    parts.append("")
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        t = str(it.get("type") or "chore")
+        arr = by_type.get(t)
+        if arr is None:
+            arr = []
+            by_type[t] = arr
+        arr.append(it)
 
-    parts.append("Top Directories:")
-    if top_dirs:
-        for idx, v in enumerate(top_dirs[:10], start=1):
-            parts.append(f"{idx}. {v}")
-    else:
-        parts.append("(none)")
-    parts.append("")
+    def _take(types: list[str], limit: int) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for t in types:
+            out.extend(by_type.get(t) or [])
+        return out[:limit]
 
-    parts.append("Top File Types:")
-    if top_ext:
-        for idx, v in enumerate(top_ext[:10], start=1):
-            parts.append(f"{idx}. {v}")
-    else:
-        parts.append("(none)")
+    built = _take(["feature", "infra"], 6)
+    improved = _take(["refactor", "performance"], 6)
+    safeguards = _take(["validation", "test", "fix"], 6)
 
-    return "\n".join(parts).strip()
+    if built:
+        sections.append("### What I Built")
+        for it in built:
+            desc = str(it.get("description") or "").strip()
+            if desc:
+                sections.append(f"- {desc}")
+        sections.append("")
+
+    if improved:
+        sections.append("### What I Improved")
+        for it in improved:
+            desc = str(it.get("description") or "").strip()
+            if desc:
+                sections.append(f"- {desc}")
+        sections.append("")
+
+    if safeguards:
+        sections.append("### Safeguards & Quality")
+        for it in safeguards:
+            desc = str(it.get("description") or "").strip()
+            if desc:
+                sections.append(f"- {desc}")
+        sections.append("")
+
+    if not built and not improved and not safeguards:
+        sections.append("No development activity found in selected range.")
+
+    return "\n".join(sections).strip()
 
 
 def _build_ai_prompt(agg: dict[str, Any]) -> str:
     return "\n".join(
         [
-            "You are a senior software engineer writing a professional achievement summary.",
+            "You are writing a real daily standup update as a software engineer.",
+            "Write in first person (I ...).",
             "",
             "Use only the structured data below.",
-            json.dumps(agg, indent=2),
+            json.dumps(
+                {
+                    "period": {
+                        "start_date": agg.get("start_date"),
+                        "end_date": agg.get("end_date"),
+                    },
+                    "detailed_changes": agg.get("detailed_changes") or [],
+                    "files_by_directory": agg.get("files_by_directory") or {},
+                },
+                indent=2,
+            ),
             "",
-            "Write output in English:",
-            "- 1 short executive summary paragraph",
-            "- 3-5 bullet insights",
-            "- 1 suggested focus area for next period",
+            "Output requirements:",
+            "- Use Markdown headings exactly as below.",
+            "- Provide at least 4 concrete action statements across the sections.",
+            "- Every bullet must describe an action taken (implemented/added/fixed/refactored/introduced/ensured/etc).",
+            "- Be specific. Avoid generic phrases like 'worked across multiple components'.",
+            "- Do not mention commits, insertions, deletions, file counts, or any numeric statistics.",
+            "- Do not write 'Executive Summary'.",
             "",
-            "Rules:",
-            "- Do not invent metrics",
-            "- Do not exaggerate",
-            "- Use only the given data",
+            "Structure:",
+            "## What I Built",
+            "- ...",
+            "",
+            "## What I Improved",
+            "- ...",
+            "",
+            "## Safeguards & Quality",
+            "- ...",
+            "",
+            "## Notes / Next Focus",
+            "- ...",
+        ]
+    )
+
+
+def _ai_output_is_valid(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+
+    low = t.lower()
+    banned = [
+        "executive summary",
+        "insertions",
+        "deletions",
+        "files changed",
+        "file count",
+        "commit",
+        "commits",
+        "high-volume",
+    ]
+    if any(b in low for b in banned):
+        return False
+
+    if any(ch.isdigit() for ch in t):
+        return False
+
+    generic = [
+        "worked across",
+        "various components",
+        "multiple components",
+        "improved overall",
+        "general improvements",
+    ]
+    if any(g in low for g in generic):
+        return False
+
+    action_lines = [
+        ln.strip()
+        for ln in t.splitlines()
+        if ln.strip().startswith("-")
+        and any(
+            v in ln.lower()
+            for v in [
+                "implemented",
+                "added",
+                "created",
+                "integrated",
+                "fixed",
+                "resolved",
+                "refactored",
+                "simplified",
+                "restructured",
+                "introduced",
+                "ensured",
+                "validated",
+                "optimized",
+                "configured",
+                "automated",
+            ]
+        )
+    ]
+    if len(action_lines) < 4:
+        return False
+
+    required_headings = [
+        "## what i built",
+        "## what i improved",
+        "## safeguards & quality",
+        "## notes / next focus",
+    ]
+    if not all(h in low for h in required_headings):
+        return False
+
+    return True
+
+
+def _build_ai_retry_prompt(previous_text: str) -> str:
+    return "\n".join(
+        [
+            "Rewrite the standup output and strictly follow the requirements.",
+            "",
+            "Hard rules:",
+            "- No numbers.",
+            "- No mention of commits, insertions, deletions, or file counts.",
+            "- No 'Executive Summary'.",
+            "- At least 4 action bullets starting with strong verbs.",
+            "- Avoid generic statements.",
+            "",
+            "Previous output (invalid):",
+            previous_text.strip(),
         ]
     )
 
@@ -205,7 +337,7 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
     agg["end_date"] = end_date
     agg["total_days"] = int((end - start).days) + 1
 
-    if not reports or int(agg.get("total_commits", 0) or 0) == 0:
+    if not reports or not (agg.get("detailed_changes") or []):
         total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
         _LOG.info(
             "bot_cmd_empty name=achievement-range user_id=%s start=%s end=%s dur_ms=%s",
@@ -220,8 +352,8 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
         )
         return
 
-    structured = _build_structured_markdown(agg)
-    message = f"{interaction.user.mention}\n```\n{structured}\n```"
+    period = f"{start_date} → {end_date}"
+    header = f"{interaction.user.mention}\n\n## Daily Standup ({period})"
 
     ai_text = ""
     ai_latency_ms: int | None = None
@@ -230,7 +362,12 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
         try:
             prompt = _build_ai_prompt(agg)
             client = await asyncio.to_thread(_load_ai_client)
-            ai_text = await asyncio.to_thread(client.generate_ai_summary, prompt)
+            candidate = await asyncio.to_thread(client.generate_ai_summary, prompt)
+            if not _ai_output_is_valid(candidate):
+                retry_prompt = _build_ai_retry_prompt(candidate)
+                candidate = await asyncio.to_thread(client.generate_ai_summary, retry_prompt)
+            if _ai_output_is_valid(candidate):
+                ai_text = candidate.strip()
         except Exception as e:
             _LOG.warning(
                 "bot_cmd_ai_failed name=achievement-range user_id=%s err=%s",
@@ -240,8 +377,10 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
             ai_text = ""
         ai_latency_ms = int((time.perf_counter() - ai_t0) * 1000)
 
-    if ai_text.strip():
-        message = message + "\n\nAI Insight:\n" + ai_text.strip()
+    if not ai_text:
+        ai_text = _build_non_ai_standup(agg)
+
+    message = header + "\n\n" + ai_text.strip()
 
     total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
     _LOG.info(
