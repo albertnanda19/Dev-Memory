@@ -90,6 +90,27 @@ class PgStore:
             self._is_open = True
             log.info("pg_pool_opened")
 
+        async with self._pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'commit_achievements'
+                    """
+                )
+                rows = await cur.fetchall()
+
+        have = {str(r[0]) for r in (rows or []) if r and r[0]}
+        need = {"payload_checksum", "prompt_version", "processing_status"}
+        missing = sorted(need - have)
+        if missing:
+            log.error(
+                "pg_schema_mismatch table=commit_achievements missing_columns=%s",
+                ",".join(missing),
+            )
+
     async def close(self) -> None:
         from logger import get_logger
 
