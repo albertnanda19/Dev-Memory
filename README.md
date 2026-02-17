@@ -176,6 +176,37 @@ python3 main.py
 python3 main.py --ai
 ```
 
+### Generate daily + AI + kirim ke Discord
+
+Command ini akan:
+
+- Generate daily JSON dan daily Markdown seperti `python3 main.py --ai`
+- Menambahkan section `## Ringkasan Naratif AI` (jika AI tersedia)
+- Mengirim hasil daily standup ke Discord channel (dengan retry + rate limit handling)
+
+```bash
+python3 main.py --daily-ai-discord
+```
+
+Kebutuhan `.env` (minimal untuk Discord):
+
+- `DISCORD_BOT_TOKEN`
+- `DISCORD_CHANNEL_ID`
+
+Opsional untuk mention/ping:
+
+- `DISCORD_USER_ID`
+
+Kebutuhan `.env` untuk AI (opsional):
+
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL`
+
+Debugging:
+
+- Log Discord: `logs/discord.log`
+- Log proses utama: `logs/cron-YYYY-MM-DD.log`
+
 ### Generate monthly
 
 ```bash
