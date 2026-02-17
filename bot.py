@@ -13,7 +13,7 @@ import discord
 from discord import app_commands
 
 from logger import get_logger
-from range_aggregator import aggregate_reports, get_reports_in_range
+from range_aggregator import get_repo_achievements_in_range
 
 
 _LOG = get_logger()
@@ -60,6 +60,11 @@ def _env_any(name: str) -> str:
 
 def _parse_date(date_str: str) -> _dt.date:
     return _dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+
+
+def _short_hash(h: str) -> str:
+    s = (h or "").strip()
+    return s[:7] if len(s) >= 7 else s
 
 
 def _load_ai_client():
@@ -145,6 +150,202 @@ def _build_non_ai_standup(agg: dict[str, Any]) -> str:
         sections.append("No development activity found in selected range.")
 
     return "\n".join(sections).strip()
+
+
+def _split_messages(text: str, *, limit: int = 1800) -> list[str]:
+    t = (text or "").strip()
+    if not t:
+        return [""]
+    if len(t) <= limit:
+        return [t]
+
+    lines = t.splitlines()
+    out: list[str] = []
+    buf: list[str] = []
+
+    def _flush():
+        nonlocal buf
+        if not buf:
+            return
+        out.append("\n".join(buf).strip())
+        buf = []
+
+    for ln in lines:
+        cand = "\n".join(buf + [ln]).strip()
+        if len(cand) <= limit:
+            buf.append(ln)
+            continue
+        if buf:
+            _flush()
+        if len(ln) <= limit:
+            buf.append(ln)
+            continue
+        chunk = ln
+        while chunk:
+            out.append(chunk[:limit].rstrip())
+            chunk = chunk[limit:]
+
+    _flush()
+    if len(out) > 1:
+        adjusted: list[str] = []
+        for idx, m in enumerate(out):
+            if idx == 0:
+                adjusted.append(m)
+            else:
+                adjusted.append(m + "\n\n(lanjutan...)")
+        return adjusted
+    return out
+
+
+async def _send_with_retries(
+    interaction: discord.Interaction,
+    message: str,
+    *,
+    allowed_mentions: discord.AllowedMentions,
+    retries: int = 3,
+) -> None:
+    attempt = 0
+    last_err: Exception | None = None
+    while attempt < retries:
+        attempt += 1
+        try:
+            await interaction.followup.send(message, allowed_mentions=allowed_mentions)
+            return
+        except Exception as e:
+            last_err = e
+            _LOG.warning(
+                "bot_send_failed attempt=%s err=%s",
+                attempt,
+                str(e),
+            )
+            await asyncio.sleep(0.5 * attempt)
+    if last_err is not None:
+        raise last_err
+
+
+def _validate_repo_integrity(repo: dict[str, Any]) -> None:
+    name = str(repo.get("name") or "")
+    expected = int(repo.get("commit_count_expected") or 0)
+    count = int(repo.get("commit_count") or 0)
+    detailed = repo.get("detailed_commits")
+    detailed_count = len(detailed) if isinstance(detailed, list) else 0
+    if expected != count or count != detailed_count:
+        _LOG.error(
+            "bot_integrity_mismatch repo=%s expected=%s count=%s detailed=%s",
+            name,
+            expected,
+            count,
+            detailed_count,
+        )
+        raise RuntimeError(
+            f"integrity mismatch repo={name} expected={expected} count={count} detailed={detailed_count}"
+        )
+
+
+def _build_repo_commit_list(repo: dict[str, Any]) -> str:
+    commits = repo.get("detailed_commits")
+    if not isinstance(commits, list) or not commits:
+        return ""
+
+    lines: list[str] = []
+    lines.append("### Daftar Commit")
+    for c in commits:
+        if not isinstance(c, dict):
+            continue
+        h = _short_hash(str(c.get("hash") or ""))
+        msg = str(c.get("message") or "").strip()
+        files = c.get("files")
+        file_paths = []
+        if isinstance(files, list):
+            for f in files:
+                if not isinstance(f, dict):
+                    continue
+                p = f.get("path")
+                if isinstance(p, str) and p.strip():
+                    file_paths.append(p.strip())
+        file_paths = sorted(set(file_paths))
+        if file_paths:
+            file_preview = ", ".join(file_paths[:8])
+            suffix = "" if len(file_paths) <= 8 else " ..."
+            if msg:
+                lines.append(f"- `{h}` {msg} ({file_preview}{suffix})")
+            else:
+                lines.append(f"- `{h}` ({file_preview}{suffix})")
+        else:
+            if msg:
+                lines.append(f"- `{h}` {msg}")
+            else:
+                lines.append(f"- `{h}`")
+    return "\n".join(lines).strip()
+
+
+def _build_repo_ai_prompt(repo: dict[str, Any], *, start_date: str, end_date: str) -> str:
+    data = {
+        "period": {"start_date": start_date, "end_date": end_date},
+        "repository": {
+            "name": repo.get("name"),
+            "commits": repo.get("detailed_commits") or [],
+            "detailed_changes": repo.get("detailed_changes") or [],
+            "files_by_directory": repo.get("files_by_directory") or {},
+        },
+    }
+
+    return "\n".join(
+        [
+            "Tulis Daily Standup untuk 1 repository saja. Jangan campur repository lain.",
+            "Gunakan Bahasa Indonesia yang natural. Technical terms tetap English.",
+            "Mulai setiap bullet dengan 'Saya ...'.",
+            "",
+            "Fokus pada perubahan yang benar-benar saya lakukan berdasarkan commit list.",
+            "Jangan menghilangkan konteks penting. Jangan generik.",
+            "",
+            "Data (lossless):",
+            json.dumps(data, indent=2),
+            "",
+            "Aturan output:",
+            "- Gunakan heading persis seperti format.",
+            "- Minimal 5 dan maksimal 8 bullet aksi konkret.",
+            "- Jangan sebut metric atau angka apa pun.",
+            "",
+            "Format:",
+            "### Yang Saya Kerjakan",
+            "- Saya ...",
+            "",
+            "### Yang Saya Tingkatkan",
+            "- Saya ...",
+            "",
+            "### Safeguard & Quality",
+            "- Saya ...",
+            "",
+            "### Fokus Berikutnya",
+            "- Saya ...",
+        ]
+    )
+
+
+def _ai_output_is_valid_repo(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    if any(ch.isdigit() for ch in t):
+        return False
+    banned = ["executive summary", "commit", "commits", "insertions", "deletions", "file count", "files changed"]
+    if any(b in low for b in banned):
+        return False
+    required_headings = [
+        "### yang saya kerjakan",
+        "### yang saya tingkatkan",
+        "### safeguard & quality",
+        "### fokus berikutnya",
+    ]
+    if not all(h in low for h in required_headings):
+        return False
+    bullets = [ln.strip() for ln in t.splitlines() if ln.strip().startswith("-")]
+    saya_bullets = [ln for ln in bullets if ln.lower().startswith("- saya ")]
+    if len(saya_bullets) < 5 or len(bullets) > 8:
+        return False
+    return True
 
 
 def _build_ai_prompt(agg: dict[str, Any]) -> str:
@@ -358,13 +559,12 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
         end_date,
     )
 
-    reports = await asyncio.to_thread(get_reports_in_range, start_date, end_date)
-    agg = await asyncio.to_thread(aggregate_reports, reports)
-    agg["start_date"] = start_date
-    agg["end_date"] = end_date
-    agg["total_days"] = int((end - start).days) + 1
+    agg = await asyncio.to_thread(get_repo_achievements_in_range, start_date, end_date)
+    repositories = agg.get("repositories")
+    if not isinstance(repositories, list):
+        repositories = []
 
-    if not reports or not (agg.get("detailed_changes") or []):
+    if not repositories:
         total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
         _LOG.info(
             "bot_cmd_empty name=achievement-range user_id=%s start=%s end=%s dur_ms=%s",
@@ -382,32 +582,66 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
     period = f"{start_date} → {end_date}"
     header = f"{interaction.user.mention}\n\n## Daily Standup ({period})"
 
-    ai_text = ""
-    ai_latency_ms: int | None = None
+    for repo in repositories:
+        if isinstance(repo, dict):
+            _validate_repo_integrity(repo)
+
+    client = None
     if _ai_enabled():
-        ai_t0 = time.perf_counter()
         try:
-            prompt = _build_ai_prompt(agg)
             client = await asyncio.to_thread(_load_ai_client)
-            candidate = await asyncio.to_thread(client.generate_ai_summary, prompt)
-            if not _ai_output_is_valid(candidate):
-                retry_prompt = _build_ai_retry_prompt(candidate)
-                candidate = await asyncio.to_thread(client.generate_ai_summary, retry_prompt)
-            if _ai_output_is_valid(candidate):
-                ai_text = candidate.strip()
         except Exception as e:
-            _LOG.warning(
-                "bot_cmd_ai_failed name=achievement-range user_id=%s err=%s",
-                user_id,
-                str(e),
-            )
-            ai_text = ""
-        ai_latency_ms = int((time.perf_counter() - ai_t0) * 1000)
+            _LOG.warning("bot_ai_client_load_failed err=%s", str(e))
+            client = None
 
-    if not ai_text:
-        ai_text = _build_non_ai_standup(agg)
+    repo_blocks: list[str] = []
+    for repo in repositories:
+        if not isinstance(repo, dict):
+            continue
+        repo_name = str(repo.get("name") or "").strip()
+        if not repo_name:
+            continue
 
-    message = header + "\n\n" + ai_text.strip()
+        expected = int(repo.get("commit_count_expected") or 0)
+        note = f"Catatan: Total commit dalam periode ini: {expected}. Semua commit telah diproses."
+
+        ai_text = ""
+        ai_latency_ms: int | None = None
+        if client is not None:
+            ai_t0 = time.perf_counter()
+            try:
+                prompt = _build_repo_ai_prompt(repo, start_date=start_date, end_date=end_date)
+                candidate = await asyncio.to_thread(client.generate_ai_summary, prompt)
+                if not _ai_output_is_valid_repo(candidate):
+                    retry_prompt = _build_ai_retry_prompt(candidate)
+                    candidate = await asyncio.to_thread(client.generate_ai_summary, retry_prompt)
+                if _ai_output_is_valid_repo(candidate):
+                    ai_text = candidate.strip()
+            except Exception as e:
+                _LOG.warning(
+                    "bot_cmd_ai_failed name=achievement-range repo=%s err=%s",
+                    repo_name,
+                    str(e),
+                )
+                ai_text = ""
+            ai_latency_ms = int((time.perf_counter() - ai_t0) * 1000)
+
+        if not ai_text:
+            ai_text = _build_non_ai_standup(repo)
+
+        commit_list = _build_repo_commit_list(repo)
+        block_parts = [f"## Repository: {repo_name}", "", note, "", ai_text.strip()]
+        if commit_list:
+            block_parts.extend(["", commit_list])
+        repo_blocks.append("\n".join(block_parts).strip())
+
+        _LOG.info(
+            "bot_repo_summary_done repo=%s ai_ms=%s",
+            repo_name,
+            ai_latency_ms,
+        )
+
+    full_message = header + "\n\n" + "\n\n---\n\n".join(repo_blocks)
 
     total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
     _LOG.info(
@@ -416,13 +650,17 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
         start_date,
         end_date,
         total_dur_ms,
-        ai_latency_ms,
+        None,
     )
 
-    await interaction.followup.send(
-        message,
-        allowed_mentions=discord.AllowedMentions(users=True),
-    )
+    allowed = discord.AllowedMentions(users=True)
+    chunks = _split_messages(full_message, limit=1800)
+    for idx, chunk in enumerate(chunks):
+        msg = chunk
+        if idx != 0:
+            msg = msg.replace(interaction.user.mention, "").lstrip()
+        await _send_with_retries(interaction, msg, allowed_mentions=allowed, retries=3)
+        await asyncio.sleep(0.5)
 
 
 def run_bot() -> None:

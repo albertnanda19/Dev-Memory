@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from commit_collector import RepoRawCommits, collect_commits_for_repos
+from config import get_repo_paths
 from logger import get_logger
 
 
@@ -58,6 +60,125 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
         return None
 
     return data
+
+
+def _type_breakdown(files: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {"A": 0, "M": 0, "D": 0}
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+        ct = f.get("change_type")
+        if ct in out:
+            out[str(ct)] = int(out.get(str(ct), 0)) + 1
+    return {k: int(v) for k, v in out.items() if int(v) > 0}
+
+
+def _repo_raw_to_dict(repo: RepoRawCommits) -> dict[str, Any]:
+    detailed_commits: list[dict[str, Any]] = []
+    for c in repo.commits:
+        files = [{"change_type": f.change_type, "path": f.path} for f in c.files]
+        detailed_commits.append(
+            {
+                "hash": c.commit_hash,
+                "author_date": c.author_date,
+                "message": c.message,
+                "files": files,
+                "type_breakdown": _type_breakdown(files),
+            }
+        )
+    return {
+        "name": repo.repository,
+        "repo_path": repo.repo_path,
+        "commit_count_expected": int(repo.commit_count_expected),
+        "commit_count": len(detailed_commits),
+        "detailed_commits": detailed_commits,
+    }
+
+
+def get_repo_achievements_in_range(start_date: str, end_date: str) -> dict[str, Any]:
+    repo_paths = get_repo_paths()
+    repos = collect_commits_for_repos(repo_paths=repo_paths, start_date=start_date, end_date=end_date)
+
+    repositories: list[dict[str, Any]] = []
+    total_expected = 0
+    total_parsed = 0
+
+    for r in repos:
+        repo_dict = _repo_raw_to_dict(r)
+        detailed_commits = repo_dict.get("detailed_commits")
+        if not isinstance(detailed_commits, list):
+            detailed_commits = []
+
+        intent_groups: dict[tuple[str, str], dict[str, Any]] = {}
+        all_files: list[str] = []
+
+        for item in detailed_commits:
+            if not isinstance(item, dict):
+                continue
+            msg = item.get("message")
+            msg = msg.strip() if isinstance(msg, str) else ""
+            files = item.get("files")
+            if not isinstance(files, list):
+                files = []
+            file_list = []
+            for f in files:
+                if not isinstance(f, dict):
+                    continue
+                p = f.get("path")
+                if isinstance(p, str) and p.strip():
+                    file_list.append(p.strip())
+
+            intent = _classify_intent(msg)
+            key = (intent, msg)
+            existing = intent_groups.get(key)
+            if existing is None:
+                existing = {
+                    "type": intent,
+                    "description": msg,
+                    "files": sorted(set(file_list)),
+                    "action_verbs": _action_verbs(intent),
+                }
+                intent_groups[key] = existing
+            else:
+                prev_files = set(existing.get("files") or [])
+                for f in file_list:
+                    prev_files.add(f)
+                existing["files"] = sorted(prev_files)
+
+            for f in file_list:
+                all_files.append(f)
+
+        detailed_changes = list(intent_groups.values())
+        detailed_changes.sort(key=lambda x: (str(x.get("type", "")), str(x.get("description", ""))))
+        files_by_directory = _group_files_by_directory(all_files)
+
+        repo_dict["detailed_changes"] = detailed_changes
+        repo_dict["files_by_directory"] = files_by_directory
+
+        repositories.append(repo_dict)
+        total_expected += int(repo_dict.get("commit_count_expected") or 0)
+        total_parsed += int(repo_dict.get("commit_count") or 0)
+
+    if total_expected != total_parsed:
+        _LOG.error(
+            "range_aggregator integrity_mismatch expected=%s parsed=%s start=%s end=%s",
+            total_expected,
+            total_parsed,
+            start_date,
+            end_date,
+        )
+        raise RuntimeError(
+            f"integrity mismatch: expected={total_expected} parsed={total_parsed} ({start_date}..{end_date})"
+        )
+
+    repositories.sort(key=lambda x: str(x.get("name") or ""))
+    return {
+        "start_date": start_date,
+        "end_date": end_date,
+        "repositories": repositories,
+        "total_commits_expected": total_expected,
+        "total_commits": total_parsed,
+    }
 
 
 def get_reports_in_range(start_date: str, end_date: str) -> list[dict[str, Any]]:
