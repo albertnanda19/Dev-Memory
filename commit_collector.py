@@ -14,14 +14,12 @@ _LOG = get_logger()
 
 @dataclass(frozen=True)
 class CommitFile:
-    change_type: str
     path: str
 
 
 @dataclass(frozen=True)
 class RawCommit:
     commit_hash: str
-    author_date: str
     message: str
     files: list[CommitFile]
 
@@ -71,24 +69,21 @@ def _parse_log_output(raw: str) -> list[RawCommit]:
     commits: list[RawCommit] = []
 
     current_hash = ""
-    current_date = ""
     current_msg = ""
     current_files: list[CommitFile] = []
 
     def _flush():
-        nonlocal current_hash, current_date, current_msg, current_files
+        nonlocal current_hash, current_msg, current_files
         if not current_hash:
             return
         commits.append(
             RawCommit(
                 commit_hash=current_hash,
-                author_date=current_date,
                 message=current_msg,
                 files=list(current_files),
             )
         )
         current_hash = ""
-        current_date = ""
         current_msg = ""
         current_files = []
 
@@ -97,22 +92,20 @@ def _parse_log_output(raw: str) -> list[RawCommit]:
         if not line.strip():
             continue
 
-        if "|" in line and not line.startswith(("A\t", "M\t", "D\t", "R\t", "C\t")):
-            parts = line.split("|", 2)
-            if len(parts) == 3:
-                _flush()
-                current_hash = parts[0].strip()
-                current_date = parts[1].strip()
-                current_msg = parts[2].strip()
-                continue
+        if "|" in line:
+            parts = line.split("|", 1)
+            if len(parts) == 2:
+                commit_hash = parts[0].strip()
+                message = parts[1].strip()
+                if commit_hash:
+                    _flush()
+                    current_hash = commit_hash
+                    current_msg = message
+                    continue
 
-        if "\t" in line:
-            st, path = line.split("\t", 1)
-            st = st.strip()[:1]
-            path = path.strip()
-            if st in {"A", "M", "D"} and path:
-                current_files.append(CommitFile(change_type=st, path=path))
-            continue
+        path = line.strip()
+        if path:
+            current_files.append(CommitFile(path=path))
 
     _flush()
     return commits
@@ -132,9 +125,8 @@ def collect_repo_commits(*, repo_path: str, start_date: str, end_date: str) -> R
             "log",
             f"--since={since}",
             f"--until={until}",
-            '--pretty=format:%H|%ad|%s',
-            "--date=iso-strict",
-            "--name-status",
+            '--pretty=format:%H|%s',
+            "--name-only",
         ],
     )
 

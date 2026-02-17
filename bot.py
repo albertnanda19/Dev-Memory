@@ -48,6 +48,59 @@ def _load_dotenv_vars() -> dict[str, str]:
     return out
 
 
+def _split_repo_block(*, repo_name: str, task_lines: list[str], limit: int = 1800) -> list[str]:
+    heading = f"## Repository: {repo_name}".strip()
+    lines = [heading, *[ln.rstrip() for ln in (task_lines or []) if (ln or "").strip()]]
+    if not lines:
+        return []
+
+    chunks: list[list[str]] = []
+    buf: list[str] = []
+
+    def _buf_text(next_line: str | None = None) -> str:
+        arr = buf if next_line is None else (buf + [next_line])
+        return "\n".join(arr).strip()
+
+    for idx, ln in enumerate(lines):
+        if idx == 0:
+            buf = [ln]
+            continue
+
+        cand = _buf_text(ln)
+        if len(cand) <= limit:
+            buf.append(ln)
+            continue
+
+        if len(buf) > 1:
+            chunks.append(buf)
+            buf = [heading, ln]
+            continue
+
+        chunks.append(buf)
+        buf = [heading]
+        if len(_buf_text(ln)) <= limit:
+            buf.append(ln)
+            continue
+
+        if ln.strip().startswith("- "):
+            chunks.append([heading, ln[: max(0, limit - len(heading) - 1)]])
+        else:
+            chunks.append([ln[:limit]])
+        buf = [heading]
+
+    if buf:
+        chunks.append(buf)
+
+    out: list[str] = []
+    for cidx, c in enumerate(chunks):
+        text = "\n".join(c).strip()
+        if cidx > 0:
+            text = text + "\n\n(lanjutan...)"
+        out.append(text)
+
+    return out
+
+
 _DOTENV = _load_dotenv_vars()
 
 
@@ -279,6 +332,73 @@ def _build_repo_commit_list(repo: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _count_bullets(text: str) -> int:
+    t = (text or "").strip()
+    if not t:
+        return 0
+    return len([ln for ln in t.splitlines() if ln.strip().startswith("- ")])
+
+
+def _clean_commit_message(msg: str) -> str:
+    s = (msg or "").strip()
+    low = s.lower()
+    prefixes = ["feat:", "fix:", "refactor:", "test:", "chore:", "perf:", "ci:"]
+    for p in prefixes:
+        if low.startswith(p):
+            return s[len(p) :].strip()
+    return s
+
+
+def _build_repo_task_lines(repo: dict[str, Any], *, ai_client) -> list[str]:
+    commits = repo.get("detailed_commits")
+    if not isinstance(commits, list) or not commits:
+        return []
+
+    out: list[str] = []
+    for c in commits:
+        if not isinstance(c, dict):
+            continue
+        msg = _clean_commit_message(str(c.get("message") or "")).strip()
+        if not msg:
+            msg = "melakukan perubahan kode"
+
+        prompt = "\n".join(
+            [
+                "Ubah commit message berikut menjadi 1 kalimat standup dalam Bahasa Indonesia.",
+                "Aturan:",
+                "- Hanya 1 kalimat.",
+                "- Jangan gabungkan dengan task lain.",
+                "- Jangan menambahkan angka/metric.",
+                "- Boleh mempertahankan technical terms dalam English.",
+                "- Output harus dimulai dengan 'Saya ...'.",
+                "",
+                f"Commit message: {msg}",
+            ]
+        )
+
+        sentence = ""
+        if ai_client is not None:
+            try:
+                candidate = ai_client.generate_ai_summary(prompt)
+                candidate = (candidate or "").strip()
+                if candidate.lower().startswith("saya "):
+                    candidate = "Saya " + candidate[4:].strip()
+                if candidate.lower().startswith("- saya "):
+                    candidate = "Saya " + candidate[7:].strip()
+                if candidate.lower().startswith("saya"):
+                    sentence = candidate
+            except Exception as e:
+                _LOG.warning("bot_ai_rephrase_failed err=%s", str(e))
+                sentence = ""
+
+        if not sentence:
+            sentence = f"Saya {msg}"
+
+        out.append(f"- {sentence}")
+
+    return out
+
+
 def _build_repo_ai_prompt(repo: dict[str, Any], *, start_date: str, end_date: str) -> str:
     data = {
         "period": {"start_date": start_date, "end_date": end_date},
@@ -304,7 +424,9 @@ def _build_repo_ai_prompt(repo: dict[str, Any], *, start_date: str, end_date: st
             "",
             "Aturan output:",
             "- Gunakan heading persis seperti format.",
-            "- Minimal 5 dan maksimal 8 bullet aksi konkret.",
+            "- Satu commit harus menjadi minimal satu bullet.",
+            "- Tidak boleh menggabungkan beberapa commit menjadi satu bullet.",
+            "- Jumlah bullet harus >= jumlah commit.",
             "- Jangan sebut metric atau angka apa pun.",
             "",
             "Format:",
@@ -343,7 +465,7 @@ def _ai_output_is_valid_repo(text: str) -> bool:
         return False
     bullets = [ln.strip() for ln in t.splitlines() if ln.strip().startswith("-")]
     saya_bullets = [ln for ln in bullets if ln.lower().startswith("- saya ")]
-    if len(saya_bullets) < 5 or len(bullets) > 8:
+    if len(saya_bullets) < 1:
         return False
     return True
 
@@ -489,7 +611,8 @@ def _build_ai_retry_prompt(previous_text: str) -> str:
             "- Bahasa Indonesia natural (bukan terjemahan literal).",
             "- Technical terms tetap English.",
             "- Setiap bullet harus dimulai dengan 'Saya ...'.",
-            "- Minimal 5 dan maksimal 8 bullet aksi konkret.",
+            "- Satu commit minimal satu bullet. Tidak boleh menggabungkan commit.",
+            "- Jumlah bullet harus >= jumlah commit.",
             "- Tidak boleh ada angka atau metric (commit/insertions/deletions/file count).",
             "- Hindari buzzword dan kalimat generik tanpa detail.",
             "",
@@ -594,7 +717,9 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
             _LOG.warning("bot_ai_client_load_failed err=%s", str(e))
             client = None
 
-    repo_blocks: list[str] = []
+    messages: list[str] = []
+    total_commits_collected = 0
+    total_bullet_points_generated = 0
     for repo in repositories:
         if not isinstance(repo, dict):
             continue
@@ -602,46 +727,48 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
         if not repo_name:
             continue
 
-        expected = int(repo.get("commit_count_expected") or 0)
-        note = f"Catatan: Total commit dalam periode ini: {expected}. Semua commit telah diproses."
+        commits = repo.get("detailed_commits")
+        commit_count = len(commits) if isinstance(commits, list) else 0
 
-        ai_text = ""
-        ai_latency_ms: int | None = None
-        if client is not None:
-            ai_t0 = time.perf_counter()
+        ai_client = client if client is not None else None
+        task_lines: list[str] = []
+        if ai_client is not None:
             try:
-                prompt = _build_repo_ai_prompt(repo, start_date=start_date, end_date=end_date)
-                candidate = await asyncio.to_thread(client.generate_ai_summary, prompt)
-                if not _ai_output_is_valid_repo(candidate):
-                    retry_prompt = _build_ai_retry_prompt(candidate)
-                    candidate = await asyncio.to_thread(client.generate_ai_summary, retry_prompt)
-                if _ai_output_is_valid_repo(candidate):
-                    ai_text = candidate.strip()
+                task_lines = await asyncio.to_thread(_build_repo_task_lines, repo, ai_client=ai_client)
             except Exception as e:
-                _LOG.warning(
-                    "bot_cmd_ai_failed name=achievement-range repo=%s err=%s",
-                    repo_name,
-                    str(e),
-                )
-                ai_text = ""
-            ai_latency_ms = int((time.perf_counter() - ai_t0) * 1000)
+                _LOG.warning("bot_repo_task_build_failed repo=%s err=%s", repo_name, str(e))
+                task_lines = []
+        if not task_lines:
+            task_lines = _build_repo_task_lines(repo, ai_client=None)
 
-        if not ai_text:
-            ai_text = _build_non_ai_standup(repo)
+        bullet_count = len(task_lines)
+        if bullet_count < commit_count:
+            _LOG.error(
+                "bot_task_coverage_mismatch repo=%s commits=%s bullets=%s",
+                repo_name,
+                commit_count,
+                bullet_count,
+            )
+            raise RuntimeError(
+                f"task coverage mismatch repo={repo_name} commits={commit_count} bullets={bullet_count}"
+            )
 
-        commit_list = _build_repo_commit_list(repo)
-        block_parts = [f"## Repository: {repo_name}", "", note, "", ai_text.strip()]
-        if commit_list:
-            block_parts.extend(["", commit_list])
-        repo_blocks.append("\n".join(block_parts).strip())
+        total_commits_collected += commit_count
+        total_bullet_points_generated += bullet_count
 
-        _LOG.info(
-            "bot_repo_summary_done repo=%s ai_ms=%s",
-            repo_name,
-            ai_latency_ms,
+        messages.extend(_split_repo_block(repo_name=repo_name, task_lines=task_lines, limit=1800))
+
+    if total_commits_collected != total_bullet_points_generated:
+        _LOG.error(
+            "bot_total_coverage_mismatch commits=%s bullets=%s start=%s end=%s",
+            total_commits_collected,
+            total_bullet_points_generated,
+            start_date,
+            end_date,
         )
-
-    full_message = header + "\n\n" + "\n\n---\n\n".join(repo_blocks)
+        raise RuntimeError(
+            f"total task coverage mismatch commits={total_commits_collected} bullets={total_bullet_points_generated}"
+        )
 
     total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
     _LOG.info(
@@ -654,11 +781,11 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
     )
 
     allowed = discord.AllowedMentions(users=True)
-    chunks = _split_messages(full_message, limit=1800)
-    for idx, chunk in enumerate(chunks):
-        msg = chunk
-        if idx != 0:
-            msg = msg.replace(interaction.user.mention, "").lstrip()
+    for idx, body in enumerate(messages):
+        if idx == 0:
+            msg = header + "\n\n" + body
+        else:
+            msg = body
         await _send_with_retries(interaction, msg, allowed_mentions=allowed, retries=3)
         await asyncio.sleep(0.5)
 
