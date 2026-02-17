@@ -69,6 +69,7 @@ def _repo_raw_to_dict(repo: RepoRawCommits) -> dict[str, Any]:
         detailed_commits.append(
             {
                 "hash": c.commit_hash,
+                "date": c.commit_date,
                 "message": c.message,
                 "files": files,
             }

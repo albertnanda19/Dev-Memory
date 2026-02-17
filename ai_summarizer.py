@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+import asyncio
+import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
 
 from logger import get_logger
+from pg_store import get_store
 
 
 _LOG = get_logger()
+
+
+PROMPT_VERSION = "1"
+SYSTEM_PROMPT_VERSION = "1"
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,39 @@ def _cache_key(*, repo_name: str, start_date: str, end_date: str, commits: list[
     sig = _commit_signature(commits)
     raw = f"{repo_name}|{start_date}|{end_date}|{sig}"
     return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _payload_checksum(
+    *,
+    repository_name: str,
+    commit_hash: str,
+    commit_message: str,
+    raw_files: Any,
+) -> str:
+    payload = {
+        "repository_name": repository_name,
+        "commit_hash": commit_hash,
+        "commit_message": commit_message,
+        "raw_files": raw_files,
+        "prompt_version": PROMPT_VERSION,
+        "system_prompt_version": SYSTEM_PROMPT_VERSION,
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _model_info() -> tuple[str, str | None]:
+    api_url = (os.getenv("LLM_API_URL") or "").strip()
+    if api_url:
+        model = (os.getenv("LLM_MODEL") or "gpt-4o-mini").strip() or "gpt-4o-mini"
+        return model, None
+
+    gemini_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if gemini_key:
+        model = (os.getenv("GEMINI_MODEL") or "gemini-3-flash-preview").strip() or "gemini-3-flash-preview"
+        return model, None
+
+    return "", None
 
 
 def _extract_bullets(text: str) -> list[str]:
@@ -256,6 +297,168 @@ def summarize_repo(
             )
             return res
 
+
+async def summarize_repo_async(
+    *,
+    ai_client: Any,
+    repo_name: str,
+    local_path: str,
+    start_date: str,
+    end_date: str,
+    commits: list[dict[str, Any]],
+    max_retries: int = 2,
+    timeout_s: int = 30,
+    token_budget: int = 6000,
+    use_cache: bool = True,
+) -> RepoLLMResult:
+    t0 = time.perf_counter()
+    commit_count = len(commits)
+
+    store = get_store() if use_cache else None
+    payload_checksums: list[str] = []
+    if store is not None:
+        for c in commits:
+            if not isinstance(c, dict):
+                payload_checksums.append("")
+                continue
+            commit_hash = str(c.get("hash") or "").strip()
+            commit_message = str(c.get("message") or "").strip()
+            raw_files = c.get("files")
+            payload_checksums.append(
+                _payload_checksum(
+                    repository_name=repo_name,
+                    commit_hash=commit_hash,
+                    commit_message=commit_message,
+                    raw_files=raw_files,
+                )
+            )
+
+    cached_bullets: list[str | None] = [None for _ in commits]
+    achievement_ids: list[str] = ["" for _ in commits]
+    if store is not None:
+        try:
+            cached_bullets, achievement_ids = await store.prepare_repo_commits(
+                repository_name=repo_name,
+                local_path=local_path,
+                commits=commits,
+                payload_checksums=payload_checksums,
+                prompt_version=PROMPT_VERSION,
+            )
+        except Exception as e:
+            _LOG.warning("pg_cache_prepare_failed repo=%s err=%s", repo_name, str(e))
+            cached_bullets = [None for _ in commits]
+            achievement_ids = ["" for _ in commits]
+
+    if store is not None and all((b or "").strip() for b in cached_bullets) and commit_count > 0:
+        bullets = [str(b or "").strip() for b in cached_bullets]
+        latency_s = time.perf_counter() - t0
+        return RepoLLMResult(
+            ok=True,
+            repo_name=repo_name,
+            bullet_lines=bullets[:commit_count],
+            token_estimate=0,
+            retries=0,
+            latency_s=latency_s,
+            error="",
+        )
+
+    prompt, token_est = summarize_repo_once(
+        ai_client=ai_client,
+        repo_name=repo_name,
+        start_date=start_date,
+        end_date=end_date,
+        commits=commits,
+        token_budget=token_budget,
+    )
+
+    retries = 0
+    last_err = ""
+    text = ""
+
+    while True:
+        attempt_t0 = time.perf_counter()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(ai_client.generate_ai_summary, prompt)
+                text = fut.result(timeout=timeout_s)
+            text = (text or "").strip()
+            attempt_latency = time.perf_counter() - attempt_t0
+            _LOG.info(
+                "llm_repo_attempt repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f",
+                repo_name,
+                commit_count,
+                token_est,
+                retries,
+                attempt_latency,
+            )
+        except Exception as e:
+            last_err = str(e)
+            if retries >= max_retries:
+                break
+            wait_s = min(4.0, 0.5 * (2**retries))
+            _LOG.warning(
+                "llm_repo_retry repo=%s commits=%s token_est=%s retry=%s wait_s=%.2f err=%s",
+                repo_name,
+                commit_count,
+                token_est,
+                retries + 1,
+                wait_s,
+                last_err,
+            )
+            await asyncio.sleep(wait_s)
+            retries += 1
+            continue
+
+        bullets = _extract_bullets(text)
+        if len(bullets) >= commit_count:
+            latency_s = time.perf_counter() - t0
+            res = RepoLLMResult(
+                ok=True,
+                repo_name=repo_name,
+                bullet_lines=bullets[:commit_count],
+                token_estimate=token_est,
+                retries=retries,
+                latency_s=latency_s,
+                error="",
+            )
+            if store is not None:
+                model_name, model_version = _model_info()
+                updates = []
+                for idx, bullet in enumerate(res.bullet_lines):
+                    if idx >= len(achievement_ids):
+                        continue
+                    aid = (achievement_ids[idx] or "").strip()
+                    if not aid:
+                        continue
+                    updates.append(
+                        store.mark_completed(
+                            achievement_id=aid,
+                            ai_bullet=bullet,
+                            model_name=model_name,
+                            model_version=model_version,
+                            token_usage=None,
+                        )
+                    )
+                if updates:
+                    await asyncio.gather(*updates)
+            if use_cache:
+                key = _cache_key(
+                    repo_name=repo_name,
+                    start_date=start_date,
+                    end_date=end_date,
+                    commits=commits,
+                )
+                _CACHE[key] = res
+            _LOG.info(
+                "llm_repo_request repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f status=SUCCESS",
+                repo_name,
+                commit_count,
+                token_est,
+                retries,
+                latency_s,
+            )
+            return res
+
         if retries >= max_retries:
             last_err = f"invalid bullet coverage bullets={len(bullets)} commits={commit_count}"
             break
@@ -269,7 +472,6 @@ def summarize_repo(
             len(bullets),
         )
         retries += 1
-        continue
 
     latency_s = time.perf_counter() - t0
     res = RepoLLMResult(
@@ -281,6 +483,19 @@ def summarize_repo(
         latency_s=latency_s,
         error=last_err or "LLM request failed",
     )
+    if store is not None:
+        fail_updates = []
+        for idx, cached in enumerate(cached_bullets):
+            if (cached or "").strip():
+                continue
+            if idx >= len(achievement_ids):
+                continue
+            aid = (achievement_ids[idx] or "").strip()
+            if not aid:
+                continue
+            fail_updates.append(store.mark_failed(achievement_id=aid))
+        if fail_updates:
+            await asyncio.gather(*fail_updates)
     _LOG.error(
         "llm_repo_request repo=%s commits=%s token_est=%s retries=%s latency_s=%.2f status=FAILED err=%s",
         repo_name,

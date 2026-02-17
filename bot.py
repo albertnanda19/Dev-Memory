@@ -12,7 +12,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
-from ai_summarizer import summarize_repo
+from ai_summarizer import summarize_repo_async
 from logger import get_logger
 from range_aggregator import get_repo_achievements_in_range
 
@@ -740,6 +740,7 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
 
     async def _process_repo(repo: dict[str, Any]) -> tuple[str, int, int, list[str]] | None:
         repo_name = str(repo.get("name") or "").strip()
+        repo_path = str(repo.get("repo_path") or "").strip()
         commits = repo.get("detailed_commits")
         commit_count = len(commits) if isinstance(commits, list) else 0
         if not repo_name or commit_count <= 0:
@@ -750,10 +751,10 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
                 task_lines = _build_repo_task_lines_non_ai(repo)
                 return repo_name, commit_count, len(task_lines), task_lines
 
-            res = await asyncio.to_thread(
-                summarize_repo,
+            res = await summarize_repo_async(
                 ai_client=client,
                 repo_name=repo_name,
+                local_path=repo_path,
                 start_date=start_date,
                 end_date=end_date,
                 commits=commits if isinstance(commits, list) else [],

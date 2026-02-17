@@ -20,6 +20,7 @@ class CommitFile:
 @dataclass(frozen=True)
 class RawCommit:
     commit_hash: str
+    commit_date: str
     message: str
     files: list[CommitFile]
 
@@ -69,21 +70,24 @@ def _parse_log_output(raw: str) -> list[RawCommit]:
     commits: list[RawCommit] = []
 
     current_hash = ""
+    current_date = ""
     current_msg = ""
     current_files: list[CommitFile] = []
 
     def _flush():
-        nonlocal current_hash, current_msg, current_files
+        nonlocal current_hash, current_date, current_msg, current_files
         if not current_hash:
             return
         commits.append(
             RawCommit(
                 commit_hash=current_hash,
+                commit_date=current_date,
                 message=current_msg,
                 files=list(current_files),
             )
         )
         current_hash = ""
+        current_date = ""
         current_msg = ""
         current_files = []
 
@@ -93,13 +97,15 @@ def _parse_log_output(raw: str) -> list[RawCommit]:
             continue
 
         if "|" in line:
-            parts = line.split("|", 1)
-            if len(parts) == 2:
+            parts = line.split("|", 2)
+            if len(parts) == 3:
                 commit_hash = parts[0].strip()
-                message = parts[1].strip()
+                commit_date = parts[1].strip()
+                message = parts[2].strip()
                 if commit_hash:
                     _flush()
                     current_hash = commit_hash
+                    current_date = commit_date
                     current_msg = message
                     continue
 
@@ -125,7 +131,7 @@ def collect_repo_commits(*, repo_path: str, start_date: str, end_date: str) -> R
             "log",
             f"--since={since}",
             f"--until={until}",
-            '--pretty=format:%H|%s',
+            '--pretty=format:%H|%cI|%s',
             "--name-only",
         ],
     )
