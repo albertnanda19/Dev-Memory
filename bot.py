@@ -12,6 +12,7 @@ from typing import Any
 import discord
 from discord import app_commands
 
+from ai_summarizer import summarize_repo
 from logger import get_logger
 from range_aggregator import get_repo_achievements_in_range
 
@@ -46,6 +47,10 @@ def _load_dotenv_vars() -> dict[str, str]:
         if k:
             out[k] = v
     return out
+
+
+def _build_repo_task_lines_non_ai(repo: dict[str, Any]) -> list[str]:
+    return _build_repo_task_lines(repo, ai_client=None)
 
 
 def _split_repo_block(*, repo_name: str, task_lines: list[str], limit: int = 1800) -> list[str]:
@@ -109,6 +114,16 @@ def _env_any(name: str) -> str:
     if v:
         return v
     return (_DOTENV.get(name) or "").strip()
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env_any(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except Exception:
+        return default
 
 
 def _parse_date(date_str: str) -> _dt.date:
@@ -717,31 +732,53 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
             _LOG.warning("bot_ai_client_load_failed err=%s", str(e))
             client = None
 
+    max_concurrency = max(1, _env_int("LLM_MAX_CONCURRENCY", 3))
+    llm_timeout_s = max(5, _env_int("LLM_TIMEOUT_SECONDS", 30))
+    llm_token_budget = max(1000, _env_int("LLM_TOKEN_BUDGET", 6000))
+
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _process_repo(repo: dict[str, Any]) -> tuple[str, int, int, list[str]] | None:
+        repo_name = str(repo.get("name") or "").strip()
+        commits = repo.get("detailed_commits")
+        commit_count = len(commits) if isinstance(commits, list) else 0
+        if not repo_name or commit_count <= 0:
+            return None
+
+        async with sem:
+            if client is None:
+                task_lines = _build_repo_task_lines_non_ai(repo)
+                return repo_name, commit_count, len(task_lines), task_lines
+
+            res = await asyncio.to_thread(
+                summarize_repo,
+                ai_client=client,
+                repo_name=repo_name,
+                start_date=start_date,
+                end_date=end_date,
+                commits=commits if isinstance(commits, list) else [],
+                timeout_s=llm_timeout_s,
+                token_budget=llm_token_budget,
+            )
+            if not res.ok:
+                return None
+            task_lines = res.bullet_lines
+            return repo_name, commit_count, len(task_lines), task_lines
+
+    tasks = []
+    for repo in repositories:
+        if isinstance(repo, dict):
+            tasks.append(asyncio.create_task(_process_repo(repo)))
+
+    results = await asyncio.gather(*tasks)
     messages: list[str] = []
     total_commits_collected = 0
     total_bullet_points_generated = 0
-    for repo in repositories:
-        if not isinstance(repo, dict):
+
+    for item in results:
+        if item is None:
             continue
-        repo_name = str(repo.get("name") or "").strip()
-        if not repo_name:
-            continue
-
-        commits = repo.get("detailed_commits")
-        commit_count = len(commits) if isinstance(commits, list) else 0
-
-        ai_client = client if client is not None else None
-        task_lines: list[str] = []
-        if ai_client is not None:
-            try:
-                task_lines = await asyncio.to_thread(_build_repo_task_lines, repo, ai_client=ai_client)
-            except Exception as e:
-                _LOG.warning("bot_repo_task_build_failed repo=%s err=%s", repo_name, str(e))
-                task_lines = []
-        if not task_lines:
-            task_lines = _build_repo_task_lines(repo, ai_client=None)
-
-        bullet_count = len(task_lines)
+        repo_name, commit_count, bullet_count, task_lines = item
         if bullet_count < commit_count:
             _LOG.error(
                 "bot_task_coverage_mismatch repo=%s commits=%s bullets=%s",
@@ -749,14 +786,11 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
                 commit_count,
                 bullet_count,
             )
-            raise RuntimeError(
-                f"task coverage mismatch repo={repo_name} commits={commit_count} bullets={bullet_count}"
-            )
+            continue
 
         total_commits_collected += commit_count
-        total_bullet_points_generated += bullet_count
-
-        messages.extend(_split_repo_block(repo_name=repo_name, task_lines=task_lines, limit=1800))
+        total_bullet_points_generated += commit_count
+        messages.extend(_split_repo_block(repo_name=repo_name, task_lines=task_lines[:commit_count], limit=1800))
 
     if total_commits_collected != total_bullet_points_generated:
         _LOG.error(
