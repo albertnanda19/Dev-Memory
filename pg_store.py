@@ -73,10 +73,23 @@ class PgStore:
         self._pool = AsyncConnectionPool(conninfo=database_url, min_size=1, max_size=10, open=False)
 
     async def open(self) -> None:
-        if not self._pool.opened:
+        if self._pool.opened:
+            return
+        from logger import get_logger
+
+        log = get_logger()
+        try:
             await self._pool.open()
+        except Exception as e:
+            log.exception("pg_pool_open_failed err=%s", str(e))
+            raise
+        else:
+            log.info("pg_pool_opened")
 
     async def close(self) -> None:
+        from logger import get_logger
+
+        get_logger().info("pg_pool_closing")
         await self._pool.close()
 
     async def _repo_upsert(self, *, cur: psycopg.AsyncCursor[Any], name: str, local_path: str) -> str:

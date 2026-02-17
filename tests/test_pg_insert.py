@@ -2,6 +2,25 @@ import asyncio
 import os
 import unittest
 import uuid
+from pathlib import Path
+
+
+def _load_dotenv_var(name: str) -> str:
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        raw = env_path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.startswith(name + "="):
+            continue
+        return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
 
 
 class _DummyAI:
@@ -14,7 +33,7 @@ class _DummyAI:
 
 class TestPgInsert(unittest.TestCase):
     def test_summarize_repo_async_inserts_rows(self):
-        database_url = (os.getenv("DATABASE_URL") or "").strip()
+        database_url = (os.getenv("DATABASE_URL") or "").strip() or _load_dotenv_var("DATABASE_URL")
         if not database_url:
             self.skipTest("DATABASE_URL not set")
 
