@@ -14,6 +14,7 @@ Dokumen ini berisi gambaran lengkap cara kerja, fitur, struktur file, environmen
 - (Opsional) Menambahkan narasi AI di layer presentasi (tanpa mempengaruhi data JSON).
 - Otomatis berjalan setiap hari via cron (06:00) + fallback saat laptop/device OFF.
 - (Opsional) Mengirim Markdown daily standup ke Discord dengan retry + logging.
+- Menjalankan Discord Bot (Gateway) untuk slash command laporan/achievement berbasis range.
 
 ---
 
@@ -207,6 +208,26 @@ Debugging:
 - Log Discord: `logs/discord.log`
 - Log proses utama: `logs/cron-YYYY-MM-DD.log`
 
+### Start Discord bot runtime (slash commands)
+
+Mode ini menjalankan bot Discord berbasis `discord.py` (Gateway) untuk melayani slash command.
+
+Install dependency:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+Jalankan:
+
+```bash
+python3 main.py --bot
+```
+
+Kebutuhan `.env`:
+
+- `DISCORD_BOT_TOKEN`
+
 ### Generate monthly
 
 ```bash
@@ -310,7 +331,7 @@ Tujuan: kirim daily standup ke Discord channel tanpa mengganggu cron.
 
 Modul:
 
-- `discord/discord_client.py`
+- `discord_delivery/discord_client.py`
   - HTTP client via `urllib`
   - retry 1x (default) + delay 5 detik
   - rate-limit aware (429 → tunggu `retry_after` → retry 1x)
@@ -319,7 +340,7 @@ Modul:
   - menggunakan `allowed_mentions` supaya mention benar-benar ping
   - membaca env dari OS dan fallback ke file `.env`
 
-- `discord/send_report.py`
+- `discord_delivery/send_report.py`
   - validasi markdown exists & non-empty
   - jika konten markdown > 1800 chars → kirim attachment
   - jika <= 1800 chars → kirim message dengan code block
@@ -330,6 +351,28 @@ Integrasi:
 
 - `run_daily.py` memanggil `send_daily_standup()` setelah daily sukses dibuat.
 - Jika Discord gagal → log warning/error, proses tetap sukses.
+
+### Discord Bot Runtime (Slash Commands)
+
+Entry point:
+
+- `python3 main.py --bot`
+
+Slash command:
+
+- `/achievement-range start_date end_date`
+  - Format tanggal: `YYYY-MM-DD`
+  - Validasi:
+    - format harus valid
+    - `start_date <= end_date`
+    - maksimum 365 hari
+    - tidak boleh tanggal masa depan
+  - Data source: `data/daily/YYYY-MM-DD.json`
+  - Output: ringkasan terstruktur + opsional AI Insight
+
+Catatan:
+
+- Package internal untuk pengiriman Discord via HTTP bernama `discord_delivery/` untuk menghindari konflik nama dengan library `discord.py`.
 
 ---
 
