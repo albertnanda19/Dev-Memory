@@ -64,8 +64,13 @@ def _read_json_file(path: Path) -> dict[str, Any] | None:
 
 
 def _repo_raw_to_dict(repo: RepoRawCommits) -> dict[str, Any]:
+    commits_sorted = sorted(
+        repo.commits,
+        key=lambda c: (str(getattr(c, "commit_date", "") or ""), str(getattr(c, "commit_hash", "") or "")),
+        reverse=True,
+    )
     detailed_commits: list[dict[str, Any]] = []
-    for c in repo.commits:
+    for c in commits_sorted:
         files = [{"path": f.path} for f in c.files]
         detailed_commits.append(
             {
@@ -82,6 +87,16 @@ def _repo_raw_to_dict(repo: RepoRawCommits) -> dict[str, Any]:
         "commit_count": len(detailed_commits),
         "detailed_commits": detailed_commits,
     }
+
+
+def _latest_commit_date(repo_dict: dict[str, Any]) -> str:
+    commits = repo_dict.get("detailed_commits")
+    if not isinstance(commits, list) or not commits:
+        return ""
+    first = commits[0]
+    if not isinstance(first, dict):
+        return ""
+    return str(first.get("date") or "")
 
 
 def get_repo_achievements_in_range(start_date: str, end_date: str) -> dict[str, Any]:
@@ -110,7 +125,7 @@ def get_repo_achievements_in_range(start_date: str, end_date: str) -> dict[str, 
             f"integrity mismatch: expected={total_expected} parsed={total_parsed} ({start_date}..{end_date})"
         )
 
-    repositories.sort(key=lambda x: str(x.get("name") or ""))
+    repositories.sort(key=lambda x: (_latest_commit_date(x), str(x.get("name") or "")), reverse=True)
     return {
         "start_date": start_date,
         "end_date": end_date,
@@ -146,7 +161,7 @@ def get_repo_achievements_in_window(*, since: str, until: str) -> dict[str, Any]
             f"integrity mismatch: expected={total_expected} parsed={total_parsed} ({since}..{until})"
         )
 
-    repositories.sort(key=lambda x: str(x.get("name") or ""))
+    repositories.sort(key=lambda x: (_latest_commit_date(x), str(x.get("name") or "")), reverse=True)
     return {
         "since": since,
         "until": until,
