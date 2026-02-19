@@ -55,6 +55,47 @@ def _parse_date_range(*, start_date: str, end_date: str) -> tuple[str, str]:
     return since, until
 
 
+def _collect_repo_commits(*, repo_path: str, since: str, until: str) -> RepoRawCommits:
+    if not repo_path or not os.path.isabs(repo_path):
+        raise ValueError("repo_path must be an absolute path")
+
+    expected = _expected_commit_count(repo_path, since, until)
+
+    cp = _run_git(
+        repo_path,
+        [
+            "log",
+            f"--since={since}",
+            f"--until={until}",
+            '--pretty=format:%H|%cI|%s',
+            "--name-only",
+        ],
+    )
+
+    if cp.returncode != 0:
+        err = (cp.stderr or cp.stdout).strip()
+        raise RuntimeError(f"git log failed ({_repo_name(repo_path)}): {err}")
+
+    commits = _parse_log_output(cp.stdout)
+
+    repo = _repo_name(repo_path)
+    if expected != len(commits):
+        _LOG.error(
+            "commit_collector mismatch repo=%s expected=%s parsed=%s",
+            repo,
+            expected,
+            len(commits),
+        )
+        raise RuntimeError(f"commit mismatch for {repo}: expected={expected} parsed={len(commits)}")
+
+    return RepoRawCommits(
+        repository=repo,
+        repo_path=repo_path,
+        commit_count_expected=expected,
+        commits=commits,
+    )
+
+
 def _expected_commit_count(repo_path: str, since: str, until: str) -> int:
     cp = _run_git(repo_path, ["rev-list", "--count", f"--since={since}", f"--until={until}", "HEAD"])
     if cp.returncode != 0:
@@ -118,51 +159,25 @@ def _parse_log_output(raw: str) -> list[RawCommit]:
 
 
 def collect_repo_commits(*, repo_path: str, start_date: str, end_date: str) -> RepoRawCommits:
-    if not repo_path or not os.path.isabs(repo_path):
-        raise ValueError("repo_path must be an absolute path")
-
     since, until = _parse_date_range(start_date=start_date, end_date=end_date)
+    return _collect_repo_commits(repo_path=repo_path, since=since, until=until)
 
-    expected = _expected_commit_count(repo_path, since, until)
 
-    cp = _run_git(
-        repo_path,
-        [
-            "log",
-            f"--since={since}",
-            f"--until={until}",
-            '--pretty=format:%H|%cI|%s',
-            "--name-only",
-        ],
-    )
-
-    if cp.returncode != 0:
-        err = (cp.stderr or cp.stdout).strip()
-        raise RuntimeError(f"git log failed ({_repo_name(repo_path)}): {err}")
-
-    commits = _parse_log_output(cp.stdout)
-
-    repo = _repo_name(repo_path)
-    if expected != len(commits):
-        _LOG.error(
-            "commit_collector mismatch repo=%s expected=%s parsed=%s",
-            repo,
-            expected,
-            len(commits),
-        )
-        raise RuntimeError(f"commit mismatch for {repo}: expected={expected} parsed={len(commits)}")
-
-    return RepoRawCommits(
-        repository=repo,
-        repo_path=repo_path,
-        commit_count_expected=expected,
-        commits=commits,
-    )
+def collect_repo_commits_window(*, repo_path: str, since: str, until: str) -> RepoRawCommits:
+    return _collect_repo_commits(repo_path=repo_path, since=since, until=until)
 
 
 def collect_commits_for_repos(*, repo_paths: list[str], start_date: str, end_date: str) -> list[RepoRawCommits]:
     out: list[RepoRawCommits] = []
     for repo_path in repo_paths:
         data = collect_repo_commits(repo_path=repo_path, start_date=start_date, end_date=end_date)
+        out.append(data)
+    return out
+
+
+def collect_commits_for_repos_window(*, repo_paths: list[str], since: str, until: str) -> list[RepoRawCommits]:
+    out: list[RepoRawCommits] = []
+    for repo_path in repo_paths:
+        data = collect_repo_commits_window(repo_path=repo_path, since=since, until=until)
         out.append(data)
     return out

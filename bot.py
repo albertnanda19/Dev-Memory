@@ -5,6 +5,7 @@ import datetime as _dt
 import json
 import os
 import time
+from zoneinfo import ZoneInfo
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from discord import app_commands
 from ai_summarizer import summarize_repo_async
 from logger import get_logger
 from range_aggregator import get_repo_achievements_in_range
+from range_aggregator import get_repo_achievements_in_window
 
 
 _LOG = get_logger()
@@ -128,6 +130,39 @@ def _env_int(name: str, default: int) -> int:
 
 def _parse_date(date_str: str) -> _dt.date:
     return _dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+
+
+def _parse_wib_datetime(value: str) -> _dt.datetime:
+    s = (value or "").strip()
+    dt = _dt.datetime.strptime(s, "%Y-%m-%d %H:%M")
+    return dt.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
+
+
+def _to_git_ts(dt: _dt.datetime) -> str:
+    return dt.astimezone(_dt.timezone.utc).isoformat(timespec="minutes")
+
+
+def _validate_window(*, since: str, until: str) -> tuple[_dt.datetime, _dt.datetime, str | None]:
+    try:
+        since_dt = _parse_wib_datetime(since)
+        until_dt = _parse_wib_datetime(until)
+    except ValueError:
+        return _dt.datetime.min.replace(tzinfo=_dt.timezone.utc), _dt.datetime.min.replace(
+            tzinfo=_dt.timezone.utc
+        ), "Invalid datetime format. Use YYYY-MM-DD HH:MM (WIB)."
+
+    if since_dt >= until_dt:
+        return since_dt, until_dt, "Invalid window. since must be earlier than until."
+
+    max_days = 365
+    if (until_dt - since_dt).days > max_days:
+        return since_dt, until_dt, f"Window too large. Maximum allowed is {max_days} days."
+
+    now = _dt.datetime.now(tz=ZoneInfo("Asia/Jakarta"))
+    if since_dt > now or until_dt > now:
+        return since_dt, until_dt, "Datetimes in the future are not allowed."
+
+    return since_dt, until_dt, None
 
 
 def _short_hash(h: str) -> str:
@@ -811,6 +846,164 @@ async def achievement_range(interaction: discord.Interaction, start_date: str, e
         user_id,
         start_date,
         end_date,
+        total_dur_ms,
+        None,
+    )
+
+    allowed = discord.AllowedMentions(users=True)
+    for idx, body in enumerate(messages):
+        if idx == 0:
+            msg = header + "\n\n" + body
+        else:
+            msg = body
+        await _send_with_retries(interaction, msg, allowed_mentions=allowed, retries=3)
+        await asyncio.sleep(0.5)
+
+
+@_client.tree.command(name="achievement-window", description="Generate an achievement summary for a datetime window (WIB)")
+@app_commands.describe(since="YYYY-MM-DD HH:MM (WIB)", until="YYYY-MM-DD HH:MM (WIB)")
+async def achievement_window(interaction: discord.Interaction, since: str, until: str):
+    start_ts = time.perf_counter()
+    user_id = str(getattr(getattr(interaction, "user", None), "id", ""))
+
+    since_dt, until_dt, err = _validate_window(since=since, until=until)
+    if err:
+        _LOG.info(
+            "bot_cmd_invalid user_id=%s since=%s until=%s err=%s",
+            user_id,
+            since,
+            until,
+            err,
+        )
+        await interaction.response.send_message(err, ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    since_git = _to_git_ts(since_dt)
+    until_git = _to_git_ts(until_dt)
+
+    _LOG.info(
+        "bot_cmd_start name=achievement-window user_id=%s since=%s until=%s",
+        user_id,
+        since_git,
+        until_git,
+    )
+
+    agg = await asyncio.to_thread(get_repo_achievements_in_window, since=since_git, until=until_git)
+    repositories = agg.get("repositories")
+    if not isinstance(repositories, list):
+        repositories = []
+
+    if not repositories:
+        total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
+        _LOG.info(
+            "bot_cmd_empty name=achievement-window user_id=%s since=%s until=%s dur_ms=%s",
+            user_id,
+            since_git,
+            until_git,
+            total_dur_ms,
+        )
+        await interaction.followup.send(
+            f"{interaction.user.mention}\nNo development activity found in selected window.",
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+        return
+
+    period = f"{since_dt.strftime('%Y-%m-%d %H:%M')} WIB → {until_dt.strftime('%Y-%m-%d %H:%M')} WIB"
+    header = f"{interaction.user.mention}\n\n## Daily Standup ({period})"
+
+    for repo in repositories:
+        if isinstance(repo, dict):
+            _validate_repo_integrity(repo)
+
+    client = None
+    if _ai_enabled():
+        try:
+            client = await asyncio.to_thread(_load_ai_client)
+        except Exception as e:
+            _LOG.warning("bot_ai_client_load_failed err=%s", str(e))
+            client = None
+
+    max_concurrency = max(1, _env_int("LLM_MAX_CONCURRENCY", 3))
+    llm_timeout_s = max(5, _env_int("LLM_TIMEOUT_SECONDS", 30))
+    llm_token_budget = max(1000, _env_int("LLM_TOKEN_BUDGET", 6000))
+
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _process_repo(repo: dict[str, Any]) -> tuple[str, int, int, list[str]] | None:
+        repo_name = str(repo.get("name") or "").strip()
+        repo_path = str(repo.get("repo_path") or "").strip()
+        commits = repo.get("detailed_commits")
+        commit_count = len(commits) if isinstance(commits, list) else 0
+        if not repo_name or commit_count <= 0:
+            return None
+
+        async with sem:
+            if client is None:
+                task_lines = _build_repo_task_lines_non_ai(repo)
+                return repo_name, commit_count, len(task_lines), task_lines
+
+            res = await summarize_repo_async(
+                ai_client=client,
+                repo_name=repo_name,
+                local_path=repo_path,
+                start_date=since_git,
+                end_date=until_git,
+                commits=commits if isinstance(commits, list) else [],
+                timeout_s=llm_timeout_s,
+                token_budget=llm_token_budget,
+            )
+            if not res.ok:
+                return None
+            task_lines = res.bullet_lines
+            return repo_name, commit_count, len(task_lines), task_lines
+
+    tasks = []
+    for repo in repositories:
+        if isinstance(repo, dict):
+            tasks.append(asyncio.create_task(_process_repo(repo)))
+
+    results = await asyncio.gather(*tasks)
+    messages: list[str] = []
+    total_commits_collected = 0
+    total_bullet_points_generated = 0
+
+    for item in results:
+        if item is None:
+            continue
+        repo_name, commit_count, bullet_count, task_lines = item
+        if bullet_count < commit_count:
+            _LOG.error(
+                "bot_task_coverage_mismatch repo=%s commits=%s bullets=%s",
+                repo_name,
+                commit_count,
+                bullet_count,
+            )
+            continue
+
+        total_commits_collected += commit_count
+        total_bullet_points_generated += commit_count
+        messages.extend(_split_repo_block(repo_name=repo_name, task_lines=task_lines[:commit_count], limit=1800))
+
+    if total_commits_collected != total_bullet_points_generated:
+        _LOG.error(
+            "bot_total_coverage_mismatch commits=%s bullets=%s since=%s until=%s",
+            total_commits_collected,
+            total_bullet_points_generated,
+            since_git,
+            until_git,
+        )
+        raise RuntimeError(
+            f"total task coverage mismatch commits={total_commits_collected} bullets={total_bullet_points_generated}"
+        )
+
+    total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
+    _LOG.info(
+        "bot_cmd_done name=achievement-window user_id=%s since=%s until=%s dur_ms=%s ai_ms=%s",
+        user_id,
+        since_git,
+        until_git,
         total_dur_ms,
         None,
     )

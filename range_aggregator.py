@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from commit_collector import RepoRawCommits, collect_commits_for_repos
+from commit_collector import collect_commits_for_repos_window
 from config import get_repo_paths
 from logger import get_logger
 
@@ -113,6 +114,42 @@ def get_repo_achievements_in_range(start_date: str, end_date: str) -> dict[str, 
     return {
         "start_date": start_date,
         "end_date": end_date,
+        "repositories": repositories,
+        "total_commits_expected": total_expected,
+        "total_commits": total_parsed,
+    }
+
+
+def get_repo_achievements_in_window(*, since: str, until: str) -> dict[str, Any]:
+    repo_paths = get_repo_paths()
+    repos = collect_commits_for_repos_window(repo_paths=repo_paths, since=since, until=until)
+
+    repositories: list[dict[str, Any]] = []
+    total_expected = 0
+    total_parsed = 0
+
+    for r in repos:
+        repo_dict = _repo_raw_to_dict(r)
+        repositories.append(repo_dict)
+        total_expected += int(repo_dict.get("commit_count_expected") or 0)
+        total_parsed += int(repo_dict.get("commit_count") or 0)
+
+    if total_expected != total_parsed:
+        _LOG.error(
+            "range_aggregator integrity_mismatch expected=%s parsed=%s since=%s until=%s",
+            total_expected,
+            total_parsed,
+            since,
+            until,
+        )
+        raise RuntimeError(
+            f"integrity mismatch: expected={total_expected} parsed={total_parsed} ({since}..{until})"
+        )
+
+    repositories.sort(key=lambda x: str(x.get("name") or ""))
+    return {
+        "since": since,
+        "until": until,
         "repositories": repositories,
         "total_commits_expected": total_expected,
         "total_commits": total_parsed,
