@@ -41,7 +41,12 @@ def _validate_repo_integrity(repo: dict[str, Any]) -> None:
         )
 
 
-async def generate_achievement_window_markdown(*, since: str, until: str) -> str:
+def _repo_markdown(*, repo_name: str, bullets: list[str]) -> str:
+    blocks = split_repo_block(repo_name=repo_name, task_lines=bullets, limit=120000)
+    return "\n\n".join(blocks).strip()
+
+
+async def generate_achievement_window(*, since: str, until: str) -> dict[str, Any]:
     start_ts = time.perf_counter()
 
     since_dt, until_dt, err = validate_window(since=since, until=until)
@@ -57,7 +62,13 @@ async def generate_achievement_window_markdown(*, since: str, until: str) -> str
         repositories = []
 
     if not repositories:
-        return "No development activity found in selected window."
+        return {
+            "ok": True,
+            "since": since,
+            "until": until,
+            "markdown": "No development activity found in selected window.",
+            "repositories": [],
+        }
 
     period = f"{since_dt.strftime('%Y-%m-%d %H:%M')} WIB → {until_dt.strftime('%Y-%m-%d %H:%M')} WIB"
     header = f"## Daily Standup ({period})"
@@ -80,7 +91,7 @@ async def generate_achievement_window_markdown(*, since: str, until: str) -> str
 
     sem = asyncio.Semaphore(max_concurrency)
 
-    async def _process_repo(repo: dict[str, Any]) -> tuple[str, int, int, list[str]] | None:
+    async def _process_repo(repo: dict[str, Any]) -> dict[str, Any] | None:
         repo_name = str(repo.get("name") or "").strip()
         repo_path = str(repo.get("repo_path") or "").strip()
         commits = repo.get("detailed_commits")
@@ -90,8 +101,14 @@ async def generate_achievement_window_markdown(*, since: str, until: str) -> str
 
         async with sem:
             if client is None:
-                task_lines = build_repo_task_lines_non_ai(repo)
-                return repo_name, commit_count, len(task_lines), task_lines
+                bullets = build_repo_task_lines_non_ai(repo)[:commit_count]
+                return {
+                    "repo_name": repo_name,
+                    "commits_count": commit_count,
+                    "bullets": bullets,
+                    "markdown": _repo_markdown(repo_name=repo_name, bullets=bullets),
+                    "source": "non_ai",
+                }
 
             res = await summarize_repo_async(
                 ai_client=client,
@@ -103,53 +120,37 @@ async def generate_achievement_window_markdown(*, since: str, until: str) -> str
                 timeout_s=llm_timeout_s,
                 token_budget=llm_token_budget,
             )
-            if not res.ok:
-                return None
-            task_lines = res.bullet_lines
-            return repo_name, commit_count, len(task_lines), task_lines
+            if res.ok and len(res.bullet_lines) >= commit_count:
+                bullets = res.bullet_lines[:commit_count]
+                return {
+                    "repo_name": repo_name,
+                    "commits_count": commit_count,
+                    "bullets": bullets,
+                    "markdown": _repo_markdown(repo_name=repo_name, bullets=bullets),
+                    "source": "llm",
+                }
 
-    tasks: list[asyncio.Task[tuple[str, int, int, list[str]] | None]] = []
+            bullets = build_repo_task_lines_non_ai(repo)[:commit_count]
+            return {
+                "repo_name": repo_name,
+                "commits_count": commit_count,
+                "bullets": bullets,
+                "markdown": _repo_markdown(repo_name=repo_name, bullets=bullets),
+                "source": "non_ai_fallback",
+            }
+
+    tasks: list[asyncio.Task[dict[str, Any] | None]] = []
     for repo in repositories:
         if isinstance(repo, dict):
             tasks.append(asyncio.create_task(_process_repo(repo)))
 
     results = await asyncio.gather(*tasks)
 
-    repo_blocks: list[str] = []
-    total_commits_collected = 0
-    total_bullet_points_generated = 0
-
+    repos_out: list[dict[str, Any]] = []
     for item in results:
         if item is None:
             continue
-        repo_name, commit_count, bullet_count, task_lines = item
-        if bullet_count < commit_count:
-            _LOG.error(
-                "achievement_task_coverage_mismatch repo=%s commits=%s bullets=%s",
-                repo_name,
-                commit_count,
-                bullet_count,
-            )
-            continue
-
-        total_commits_collected += commit_count
-        total_bullet_points_generated += commit_count
-
-        blocks = split_repo_block(repo_name=repo_name, task_lines=task_lines[:commit_count], limit=120000)
-        if blocks:
-            repo_blocks.append("\n\n".join(blocks))
-
-    if total_commits_collected != total_bullet_points_generated:
-        _LOG.error(
-            "achievement_total_coverage_mismatch commits=%s bullets=%s since=%s until=%s",
-            total_commits_collected,
-            total_bullet_points_generated,
-            since_git,
-            until_git,
-        )
-        raise RuntimeError(
-            f"total task coverage mismatch commits={total_commits_collected} bullets={total_bullet_points_generated}"
-        )
+        repos_out.append(item)
 
     total_dur_ms = int((time.perf_counter() - start_ts) * 1000)
     _LOG.info(
@@ -159,4 +160,16 @@ async def generate_achievement_window_markdown(*, since: str, until: str) -> str
         total_dur_ms,
     )
 
-    return "\n\n".join([header, *repo_blocks]).strip()
+    repo_markdowns = [str(r.get("markdown") or "").strip() for r in repos_out if str(r.get("markdown") or "").strip()]
+    if not repo_markdowns:
+        markdown = "No development activity found in selected window."
+    else:
+        markdown = "\n\n".join([header, *repo_markdowns]).strip()
+
+    return {
+        "ok": True,
+        "since": since,
+        "until": until,
+        "markdown": markdown,
+        "repositories": repos_out,
+    }
