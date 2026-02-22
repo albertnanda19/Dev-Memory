@@ -28,6 +28,11 @@ def _yesterday_date_str() -> str:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="dev-memory")
     parser.add_argument(
+        "--api",
+        action="store_true",
+        help="Start REST API server runtime (FastAPI)",
+    )
+    parser.add_argument(
         "--bot",
         action="store_true",
         help="Start Discord bot runtime (slash commands)",
@@ -140,6 +145,13 @@ def _send_discord(*, date_str: str) -> None:
 
 def main() -> None:
     args = _parse_args()
+    if args.api:
+        import uvicorn
+
+        host = os.getenv("API_HOST") or "0.0.0.0"
+        port = int(os.getenv("API_PORT") or "8000")
+        uvicorn.run("api_app:app", host=host, port=port)
+        return
     if args.bot:
         from bot import run_bot
 

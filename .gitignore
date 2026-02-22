@@ -5,3 +5,4 @@ data/state.json
 data/daily/
 data/monthly/
 *.pyc
+prompt.md

@@ -5,15 +5,20 @@ import datetime as _dt
 import json
 import os
 import time
-from zoneinfo import ZoneInfo
-from importlib.util import module_from_spec, spec_from_file_location
-from pathlib import Path
 from typing import Any
 
 import discord
 from discord import app_commands
 
 from ai_summarizer import summarize_repo_async
+from achievement_runtime import ai_enabled as _ai_enabled
+from achievement_runtime import build_repo_task_lines_non_ai as _build_repo_task_lines_non_ai
+from achievement_runtime import env_any as _env_any
+from achievement_runtime import env_int as _env_int
+from achievement_runtime import load_ai_client as _load_ai_client
+from achievement_runtime import split_repo_block as _split_repo_block
+from achievement_runtime import to_git_ts as _to_git_ts
+from achievement_runtime import validate_window as _validate_window
 from logger import get_logger
 from range_aggregator import get_repo_achievements_in_range
 from range_aggregator import get_repo_achievements_in_window
@@ -22,170 +27,13 @@ from range_aggregator import get_repo_achievements_in_window
 _LOG = get_logger()
 
 
-def _env(name: str) -> str:
-    return (os.getenv(name) or "").strip()
-
-
-def _load_dotenv_vars() -> dict[str, str]:
-    env_path = Path(__file__).resolve().parent / ".env"
-    if not env_path.exists():
-        return {}
-    try:
-        content = env_path.read_text(encoding="utf-8")
-    except Exception:
-        return {}
-    out: dict[str, str] = {}
-    for raw_line in content.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        if line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        k = k.strip()
-        v = v.strip().strip('"').strip("'")
-        if k:
-            out[k] = v
-    return out
-
-
-def _build_repo_task_lines_non_ai(repo: dict[str, Any]) -> list[str]:
-    return _build_repo_task_lines(repo, ai_client=None)
-
-
-def _split_repo_block(*, repo_name: str, task_lines: list[str], limit: int = 1800) -> list[str]:
-    heading = f"## Repository: {repo_name}".strip()
-    lines = [heading, *[ln.rstrip() for ln in (task_lines or []) if (ln or "").strip()]]
-    if not lines:
-        return []
-
-    chunks: list[list[str]] = []
-    buf: list[str] = []
-
-    def _buf_text(next_line: str | None = None) -> str:
-        arr = buf if next_line is None else (buf + [next_line])
-        return "\n".join(arr).strip()
-
-    for idx, ln in enumerate(lines):
-        if idx == 0:
-            buf = [ln]
-            continue
-
-        cand = _buf_text(ln)
-        if len(cand) <= limit:
-            buf.append(ln)
-            continue
-
-        if len(buf) > 1:
-            chunks.append(buf)
-            buf = [heading, ln]
-            continue
-
-        chunks.append(buf)
-        buf = [heading]
-        if len(_buf_text(ln)) <= limit:
-            buf.append(ln)
-            continue
-
-        if ln.strip().startswith("- "):
-            chunks.append([heading, ln[: max(0, limit - len(heading) - 1)]])
-        else:
-            chunks.append([ln[:limit]])
-        buf = [heading]
-
-    if buf:
-        chunks.append(buf)
-
-    out: list[str] = []
-    for cidx, c in enumerate(chunks):
-        text = "\n".join(c).strip()
-        if cidx > 0:
-            text = text + "\n\n(lanjutan...)"
-        out.append(text)
-
-    return out
-
-
-_DOTENV = _load_dotenv_vars()
-
-
-def _env_any(name: str) -> str:
-    v = _env(name)
-    if v:
-        return v
-    return (_DOTENV.get(name) or "").strip()
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = _env_any(name)
-    if not raw:
-        return default
-    try:
-        return int(raw)
-    except Exception:
-        return default
-
-
 def _parse_date(date_str: str) -> _dt.date:
     return _dt.datetime.strptime(date_str, "%Y-%m-%d").date()
-
-
-def _parse_wib_datetime(value: str) -> _dt.datetime:
-    s = (value or "").strip()
-    dt = _dt.datetime.strptime(s, "%Y-%m-%d %H:%M")
-    return dt.replace(tzinfo=ZoneInfo("Asia/Jakarta"))
-
-
-def _to_git_ts(dt: _dt.datetime) -> str:
-    return dt.astimezone(_dt.timezone.utc).isoformat(timespec="minutes")
-
-
-def _validate_window(*, since: str, until: str) -> tuple[_dt.datetime, _dt.datetime, str | None]:
-    try:
-        since_dt = _parse_wib_datetime(since)
-        until_dt = _parse_wib_datetime(until)
-    except ValueError:
-        return _dt.datetime.min.replace(tzinfo=_dt.timezone.utc), _dt.datetime.min.replace(
-            tzinfo=_dt.timezone.utc
-        ), "Invalid datetime format. Use YYYY-MM-DD HH:MM (WIB)."
-
-    if since_dt >= until_dt:
-        return since_dt, until_dt, "Invalid window. since must be earlier than until."
-
-    max_days = 365
-    if (until_dt - since_dt).days > max_days:
-        return since_dt, until_dt, f"Window too large. Maximum allowed is {max_days} days."
-
-    now = _dt.datetime.now(tz=ZoneInfo("Asia/Jakarta"))
-    if since_dt > now or until_dt > now:
-        return since_dt, until_dt, "Datetimes in the future are not allowed."
-
-    return since_dt, until_dt, None
 
 
 def _short_hash(h: str) -> str:
     s = (h or "").strip()
     return s[:7] if len(s) >= 7 else s
-
-
-def _load_ai_client():
-    mod_path = Path(__file__).resolve().parent / "llm-client.py"
-    spec = spec_from_file_location("dev_memory_llm_client", mod_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load llm-client.py")
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def _ai_enabled() -> bool:
-    if _env_any("LLM_API_URL") and _env_any("LLM_API_KEY"):
-        return True
-    if _env_any("GEMINI_API_KEY"):
-        return True
-    return False
 
 
 def _build_non_ai_standup(agg: dict[str, Any]) -> str:
