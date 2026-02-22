@@ -7,5 +7,6 @@ def get_repo_paths() -> list[str]:
         "/Users/albert-dibimbing/Documents/coding-repository/edlink-cakrawala",
         "/Users/albert-dibimbing/Documents/coding-repository/spmb-cakrawala-be",
         "/Users/albert-dibimbing/Documents/coding-repository/spmb-cakrawala",
+        "/Users/albert-dibimbing/Documents/coding-repository/landing-page-cakrawala",
     ]
 
